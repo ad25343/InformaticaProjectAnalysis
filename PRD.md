@@ -40,19 +40,23 @@ These XML exports are the raw material that this tool works with.
 
 ## 2. The Problem — From SaaS Tools to Open Code
 
-Organizations are moving off Informatica PowerCenter. The reasons vary — licensing
-cost, vendor lock-in, the shift toward modern data stacks, or simply that the
-platform is end-of-life for their needs.
+If your organization runs Informatica PowerCenter, you already know its gaps. The
+platform does what it was built to do — batch ETL on structured data — but it has
+not kept pace with what engineering teams are now being asked to deliver.
 
-Until recently, the migration path led to another SaaS platform: Informatica's own
-Cloud Data Integration, Talend, Matillion, or one of the managed migration services
-that charge per-mapping conversion fees. The destination changed, but the model
-stayed the same — proprietary tools, recurring licenses, platform dependency.
+The most acute gap is GenAI. Business teams are demanding AI-enabled data pipelines
+— LLMs (Large Language Models) for classification, enrichment, anomaly detection,
+and summarization embedded directly in the data flow. Informatica PowerCenter has
+no native GenAI capability. It cannot call an LLM, cannot integrate with vector
+databases, and has no roadmap for AI-augmented pipelines. Staying on PowerCenter
+means the data infrastructure simply cannot participate in what the business is
+trying to do next.
 
-That model is shifting. Engineering teams increasingly want to land in **open code**:
-Python scripts, dbt models, PySpark jobs, Airflow DAGs (Directed Acyclic Graphs —
-workflow dependency chains) — code they own, version-control, test, and deploy
-without platform lock-in. The target is not another tool. The target is a codebase.
+The switch to **open code** closes these gaps. Python, PySpark, and dbt integrate
+with any model, any API, any tool in the ecosystem — and produce a codebase the
+team owns, version-controls, tests, and deploys without platform lock-in. For teams
+that have hit PowerCenter's ceiling, the destination is not another SaaS tool.
+The destination is a codebase.
 
 This changes the conversion problem fundamentally. A SaaS-to-SaaS migration can
 lean on the destination platform's import wizards. But a SaaS-to-code migration

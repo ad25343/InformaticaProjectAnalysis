@@ -7,15 +7,22 @@
 
 ## What Is This Tool For?
 
-If your organization uses **Informatica PowerCenter** for data integration and you are
-planning to migrate that logic to **open code** — Python scripts, dbt models, PySpark
-jobs, or any modern framework — this tool is the first step.
+If you run **Informatica PowerCenter** and are planning to migrate to **open code** —
+Python scripts, dbt models, PySpark jobs — this tool is the first step. And you already
+know the gaps that are driving that decision. The platform does what it was built
+to do, but it has not kept pace with what engineering teams are now being asked to
+deliver. The most acute gap is GenAI: business teams are demanding AI-enabled pipelines
+— LLMs (Large Language Models) for classification, enrichment, and anomaly detection
+embedded in the data flow. Informatica PowerCenter has no native GenAI capability. It
+cannot call an LLM, cannot integrate with vector databases, and has no roadmap for
+AI-augmented pipelines. Staying on PowerCenter means the data infrastructure cannot
+participate in what the business is trying to do next.
 
-The migration landscape has shifted. Teams used to move from one SaaS platform to another
-(Informatica Cloud, Talend, Matillion). Now they want to land in code they own,
-version-control, and deploy without platform lock-in. That changes the conversion problem:
-you need to produce well-structured, maintainable source code, not just functionally
-equivalent scripts inside another tool.
+Open code closes these gaps. Python, PySpark, and dbt integrate with any model, any
+API, any tool in the ecosystem — and produce a codebase the team owns, version-controls,
+and deploys without platform lock-in. That changes the conversion problem: you need to
+produce well-structured, maintainable source code, not just functionally equivalent
+scripts inside another tool.
 
 Informatica PowerCenter stores its data transformation logic in units called **mappings**.
 Each mapping defines a data flow: source tables → transformations (lookups, expressions,

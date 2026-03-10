@@ -21,13 +21,21 @@ expressions, filters, aggregations), and into a target table. A typical enterpri
 PowerCenter environment contains dozens to hundreds of these mappings, all exportable
 as XML files.
 
-Organizations are migrating off PowerCenter. Historically the destination was another
-SaaS platform (Informatica Cloud, Talend, Matillion), but the shift is now toward
-**open code** — Python scripts, dbt models, PySpark jobs — code that teams own,
-version-control, and deploy without platform lock-in. This SaaS-to-code migration
-needs to produce well-structured, maintainable source code, not just functionally
-equivalent scripts. The goal is to **convert** existing logic faithfully, not rewrite
-the data architecture.
+If your organization runs PowerCenter, you already know its gaps. The platform does
+what it was built to do — batch ETL on structured data — but it has not kept pace
+with what engineering teams are now being asked to deliver. The most acute gap is
+GenAI: business teams are demanding AI-enabled pipelines, and Informatica PowerCenter
+has no native GenAI capability. It cannot call an LLM (Large Language Model), cannot
+integrate with vector databases, and has no roadmap for AI-augmented data flows.
+Staying on PowerCenter means the data infrastructure cannot participate in what the
+business is trying to do next.
+
+The destination is **open code** — Python scripts, dbt models, PySpark jobs — code
+that teams own, version-control, and deploy without platform lock-in, and that
+integrates with any model or API in the ecosystem. This SaaS-to-code migration needs
+to produce well-structured, maintainable source code, not just functionally equivalent
+scripts. The goal is to **convert** existing logic faithfully, not rewrite the data
+architecture.
 
 Converting each mapping one at a time, in isolation, produces poor results: 14 mappings
 that follow the same pattern become 14 separate scripts instead of one parameterized
