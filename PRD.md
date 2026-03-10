@@ -265,7 +265,6 @@ Phase 1   Discovery
           │             complexity, infer missing mapplet behavior, detect
           │             implicit dependencies
           │
-    │
     ▼
 Phase 2   Pattern Grouping                      [AI-assisted]
           ├── Step 2.1  Structural Fingerprinting
@@ -283,7 +282,6 @@ Phase 2   Pattern Grouping                      [AI-assisted]
           │             Assign confidence per mapping-to-group assignment
           │             Flag edge cases and ambiguous mappings
           │
-    │
     ▼
 Phase 3   Strategy Document Generation
           ├── Step 3.1  PDF Generation          [leadership summary + tech lead detail]
@@ -512,8 +510,8 @@ Machine-readable output describing the full analysis results.
     ],
 
     "dependency_dag": [
-        {"from": "m_stg_customer", "to": "m_dim_customer", "via": "STG_CUSTOMER"},
-        {"from": "m_dim_customer", "to": "m_fact_daily_txn", "via": "DIM_CUSTOMER"}
+        {"from_mapping": "m_stg_customer", "to_mapping": "m_dim_customer", "via_table": "STG_CUSTOMER"},
+        {"from_mapping": "m_dim_customer", "to_mapping": "m_fact_daily_txn", "via_table": "DIM_CUSTOMER"}
     ],
 
     "execution_order": [
@@ -748,34 +746,34 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 
 ## 20. Version Roadmap
 
-### v0.1.0 — Foundation (current target)
+### v0.1.0 — Foundation (current)
 
 - Project config parser and validation
 - Source resolution (folder type only)
 - Mapping XML parser (extract transformations, connectors, sources, targets)
-- Cross-mapping graph construction (dependency edges, shared assets)
-- Basic fingerprinting and pattern grouping
+- Cross-mapping project graph construction (dependency edges, shared assets)
+- Spine extraction, structural fingerprinting, and pattern grouping
+- Execution order generation (topological sort into parallel stages)
 - Strategy JSON generation
-- FastAPI backend with health endpoint
-- SQLite persistence
+- FastAPI backend with all API endpoints
+- React UI: dashboard view, pattern groups view, dependency graph view
 - Structured logging
 
-### v0.2.0 — Strategy Documents + UI
+### v0.2.0 — Strategy Documents + Review Gate
 
 - PDF report generation (leadership summary + tech lead detail)
 - Excel workbook generation (5 sheets)
-- React UI: dashboard view, pattern groups view
 - SSE progress streaming
-- Human review gate (APPROVE / REJECT)
+- Human review gate (APPROVE / REJECT) with persistence
 - Override controls (confirm, move, individualize)
+- SQLite persistence for jobs and audit trail
 
-### v0.3.0 — Dependency Graph + AI Enhancement
+### v0.3.0 — AI Enhancement
 
-- Dependency DAG visualization in UI
 - AI-assisted expression classification
 - AI-assisted custom SQL interpretation
 - Confidence scoring refinement
-- Execution order generation (topological sort)
+- Dependency DAG visualization in UI (interactive)
 
 ### v0.4.0 — Watcher + Incremental
 
