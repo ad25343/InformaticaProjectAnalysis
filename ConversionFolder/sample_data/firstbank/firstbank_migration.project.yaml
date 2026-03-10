@@ -1,0 +1,89 @@
+# ============================================================================
+# FirstBank DWH Migration — Project Analysis Configuration
+# ============================================================================
+# Drop this file into the InformaticaProjectAnalysis watcher directory
+# or upload it through the UI to trigger estate-level pre-analysis.
+# ============================================================================
+
+project:
+  name: "FirstBank DWH Migration"
+  version: "1.0"
+  owner: "Data Engineering"
+  description: "Full migration of FirstBank Informatica PowerCenter estate"
+
+# ----------------------------------------------------------------------------
+# Source: where the Informatica exports live
+# ----------------------------------------------------------------------------
+source:
+  type: folder                                          # folder | repo | zip | s3
+  location: "/Users/aravinddoma/ClaudeCowork/InformaticaProjectAnalysis/ConversionFolder/sample_data/firstbank/"
+  # For repo:
+  #   type: repo
+  #   location: "https://github.com/firstbank/informatica-exports"
+  #   branch: "main"
+  #   path: "exports/"
+  # For S3:
+  #   type: s3
+  #   location: "s3://firstbank-etl/informatica-exports/"
+  #   region: "us-east-1"
+
+# ----------------------------------------------------------------------------
+# Scope: what to include/exclude from analysis
+# ----------------------------------------------------------------------------
+scope:
+  mappings:
+    include:
+      - "mappings/**/*.xml"
+      - "all_mappings/**/*.xml"
+    exclude:
+      - "mappings/archive/**"
+  workflows:
+    include:
+      - "workflows/**/*.xml"
+  parameters:
+    include:
+      - "parameter_files/*.xml"
+  default_parameter_env: "dev"                          # which param file to use for analysis
+
+# ----------------------------------------------------------------------------
+# Analysis: controls for the pre-analysis engine
+# ----------------------------------------------------------------------------
+analysis:
+  fingerprint_strictness: "moderate"                    # strict | moderate | loose
+  min_group_size: 2                                     # minimum mappings to form a pattern group
+  confidence_threshold: 0.7                             # below this → flag for human review
+  detect_shared_assets: true
+  build_dependency_dag: true
+  classify_expressions: true                            # AI-assisted expression pattern matching
+
+# ----------------------------------------------------------------------------
+# Review: who reviews the strategy document
+# ----------------------------------------------------------------------------
+review:
+  tech_lead:
+    name: "Jane Smith"
+    email: "jane.smith@firstbank.com"
+  leadership:
+    name: "Mike Johnson"
+    email: "mike.johnson@firstbank.com"
+  auto_notify: true                                     # send notification when strategy is ready
+
+# ----------------------------------------------------------------------------
+# Conversion: handoff to InformaticaConversion
+# ----------------------------------------------------------------------------
+conversion:
+  api_endpoint: "http://localhost:8090"                  # InformaticaConversion instance
+  batch_concurrency: 3
+  output_dir: "/output/firstbank/"                      # for offline handoff (if no API)
+  strategy_format: "json"                               # json | yaml
+
+# ----------------------------------------------------------------------------
+# Notifications
+# ----------------------------------------------------------------------------
+notifications:
+  webhook_url: ""                                       # Slack / Teams incoming webhook
+  events:
+    on_analysis_complete: true
+    on_strategy_ready: true
+    on_review_approved: true
+    on_conversion_complete: true
