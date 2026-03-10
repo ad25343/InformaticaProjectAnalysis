@@ -1,0 +1,1864 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE POWERMART SYSTEM "powrmart.dtd">
+<!--
+  Mapping  : m_FNMA_LOAN_DELIVERY_SCD2
+  Purpose  : Ingest monthly Fannie Mae loan delivery flat file, join to credit scores,
+             perform SCD Type 2 against current loan status dimension, route loans to
+             FACT_LOAN_DELIVERY / DIM_LOAN_STATUS_HIST / AGG_PORTFOLIO_SUMMARY.
+  Complexity: HIGH  →  PySpark target
+  Sources  :
+    1. FNMA_LOAN_DELIVERY.txt   — monthly delivery flat file (pipe-delimited, no header)
+    2. BORROWER_CREDIT_SCORES.csv — credit bureau flat file (comma-delimited, with header)
+    3. DIM_LOAN_STATUS (Oracle) — current SCD2 dimension (current records only)
+  Lookups  :
+    1. REF_MSA_PROPERTIES (Oracle) — MSA code → metro name, state, region
+  Transformations:
+    SQ_FNMA   → SQ_CREDIT → SQ_DIM_STATUS → JNR_LOAN_CREDIT →
+    LKP_MSA → EXP_DERIVE → RTR_LOAN_CHANGE →
+      (NEW_LOAN  → AGG_PORTFOLIO → TGT_FACT + TGT_AGG)
+      (CHANGED   → EXP_SCD2_EXPIRE + TGT_DIM_HIST + TGT_FACT)
+      (UNCHANGED → TGT_FACT only)
+  Targets  :
+    1. FACT_LOAN_DELIVERY      (Snowflake)
+    2. DIM_LOAN_STATUS_HIST    (Snowflake)
+    3. AGG_PORTFOLIO_SUMMARY   (Snowflake)
+-->
+<POWERMART CREATION_DATE="02/15/2026 09:00:00" REPOSITORY_VERSION="186.94">
+<REPOSITORY NAME="MORTGAGE_DW" VERSION="186.94" CODEPAGE="UTF-8" DATABASETYPE="Oracle">
+
+<FOLDER NAME="FNMA_DELIVERY" GROUP="" DESCRIPTION="Fannie Mae monthly loan delivery SCD2 pipeline" PERMISSIONS="rwx---r--" SHARED="SHARED">
+
+<!-- ═══════════════════════════════════════════════════════════
+     SOURCE DEFINITIONS
+═══════════════════════════════════════════════════════════ -->
+
+<!-- Source 1: FNMA Monthly Delivery File (pipe-delimited, no header row) -->
+<SOURCE BUSINESSNAME="FNMA Monthly Loan Delivery File"
+        DATABASETYPE="FLAT FILE"
+        DBDNAME=""
+        DESCRIPTION="Fannie Mae Single-Family Loan Performance Data — monthly delivery extract. Pipe-delimited, no header. Layout per FNMA MBS Prospectus Appendix C."
+        NAME="FNMA_LOAN_DELIVERY"
+        OBJECTVERSION="1"
+        OWNERNAME=""
+        VERSIONNUMBER="1">
+  <TABLEATTRIBUTE NAME="File Type" VALUE="Delimited"/>
+  <TABLEATTRIBUTE NAME="Delimiter" VALUE="|"/>
+  <TABLEATTRIBUTE NAME="Row Delimiter" VALUE="LF"/>
+  <TABLEATTRIBUTE NAME="Quote Character" VALUE="None"/>
+  <TABLEATTRIBUTE NAME="Skip Rows" VALUE="0"/>
+  <TABLEATTRIBUTE NAME="Import Column Names" VALUE="NO"/>
+  <TABLEATTRIBUTE NAME="Null Character" VALUE="NULL"/>
+  <TABLEATTRIBUTE NAME="Code Page" VALUE="UTF-8"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="FNMA internal 13-digit loan identifier"
+               FIELDNUMBER="1"
+               FIELDPROPERTY="0"
+               LENGTH="13"
+               NAME="LOAN_IDENTIFIER"
+               NULLABLE="NOTNULL"
+               PRECISION="13"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="MERS Mortgage Identification Number (18-digit)"
+               FIELDNUMBER="2"
+               FIELDPROPERTY="0"
+               LENGTH="18"
+               NAME="MERS_MIN"
+               NULLABLE="NULLABLE"
+               PRECISION="18"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Originating lender NMLS ID"
+               FIELDNUMBER="3"
+               FIELDPROPERTY="0"
+               LENGTH="12"
+               NAME="ORIGINATOR_ID"
+               NULLABLE="NULLABLE"
+               PRECISION="12"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Servicer NMLS ID at time of delivery"
+               FIELDNUMBER="4"
+               FIELDPROPERTY="0"
+               LENGTH="12"
+               NAME="SERVICER_ID"
+               NULLABLE="NULLABLE"
+               PRECISION="12"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               DESCRIPTION="Original unpaid principal balance at origination"
+               FIELDNUMBER="5"
+               FIELDPROPERTY="0"
+               LENGTH="12"
+               NAME="ORIGINAL_UPB"
+               NULLABLE="NOTNULL"
+               PRECISION="12"
+               SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               DESCRIPTION="Current unpaid principal balance this reporting period"
+               FIELDNUMBER="6"
+               FIELDPROPERTY="0"
+               LENGTH="12"
+               NAME="CURRENT_UPB"
+               NULLABLE="NOTNULL"
+               PRECISION="12"
+               SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               DESCRIPTION="Note interest rate (annual, e.g., 6.750)"
+               FIELDNUMBER="7"
+               FIELDPROPERTY="0"
+               LENGTH="7"
+               NAME="NOTE_RATE"
+               NULLABLE="NOTNULL"
+               PRECISION="7"
+               SCALE="3"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Origination date YYYYMM"
+               FIELDNUMBER="8"
+               FIELDPROPERTY="0"
+               LENGTH="6"
+               NAME="ORIGINATION_DATE"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="First payment date YYYYMM"
+               FIELDNUMBER="9"
+               FIELDPROPERTY="0"
+               LENGTH="6"
+               NAME="FIRST_PAYMENT_DATE"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               DESCRIPTION="Original loan term in months (e.g., 360)"
+               FIELDNUMBER="10"
+               FIELDPROPERTY="0"
+               LENGTH="3"
+               NAME="ORIGINAL_TERM"
+               NULLABLE="NOTNULL"
+               PRECISION="3"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               DESCRIPTION="Original loan-to-value ratio at origination"
+               FIELDNUMBER="11"
+               FIELDPROPERTY="0"
+               LENGTH="5"
+               NAME="ORIGINAL_LTV"
+               NULLABLE="NOTNULL"
+               PRECISION="5"
+               SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               DESCRIPTION="Original combined LTV (including subordinate liens)"
+               FIELDNUMBER="12"
+               FIELDPROPERTY="0"
+               LENGTH="5"
+               NAME="ORIGINAL_CLTV"
+               NULLABLE="NOTNULL"
+               PRECISION="5"
+               SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Loan purpose: P=Purchase, C=Cash-Out Refi, N=No-Cash Refi, O=Other"
+               FIELDNUMBER="13"
+               FIELDPROPERTY="0"
+               LENGTH="1"
+               NAME="LOAN_PURPOSE"
+               NULLABLE="NOTNULL"
+               PRECISION="1"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Property type: SF=Single Family, CO=Condo, PU=PUD, MH=Manufactured, CP=Co-op"
+               FIELDNUMBER="14"
+               FIELDPROPERTY="0"
+               LENGTH="2"
+               NAME="PROPERTY_TYPE"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Occupancy status: P=Primary, S=Second, I=Investment"
+               FIELDNUMBER="15"
+               FIELDPROPERTY="0"
+               LENGTH="1"
+               NAME="OCCUPANCY_STATUS"
+               NULLABLE="NOTNULL"
+               PRECISION="1"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="5-digit ZIP code of secured property"
+               FIELDNUMBER="16"
+               FIELDPROPERTY="0"
+               LENGTH="5"
+               NAME="PROPERTY_ZIP"
+               NULLABLE="NULLABLE"
+               PRECISION="5"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="MSA/MD code (5-digit CBSA code per OMB)"
+               FIELDNUMBER="17"
+               FIELDPROPERTY="0"
+               LENGTH="5"
+               NAME="MSA_CODE"
+               NULLABLE="NULLABLE"
+               PRECISION="5"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="2-letter state code"
+               FIELDNUMBER="18"
+               FIELDPROPERTY="0"
+               LENGTH="2"
+               NAME="PROPERTY_STATE"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               DESCRIPTION="Number of units (1-4)"
+               FIELDNUMBER="19"
+               FIELDPROPERTY="0"
+               LENGTH="1"
+               NAME="NUMBER_OF_UNITS"
+               NULLABLE="NOTNULL"
+               PRECISION="1"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Current delinquency status: 0=Current, 1-12=Months DPD, XX=Foreclosure, FC=REO"
+               FIELDNUMBER="20"
+               FIELDPROPERTY="0"
+               LENGTH="2"
+               NAME="DELINQUENCY_STATUS"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Zero balance code: 01=Prepaid, 02=Third Party Sale, 03=Short Sale, 06=Repurchase, 09=Deed-in-Lieu, 15=Disposition"
+               FIELDNUMBER="21"
+               FIELDPROPERTY="0"
+               LENGTH="2"
+               NAME="ZERO_BALANCE_CODE"
+               NULLABLE="NULLABLE"
+               PRECISION="2"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Zero balance effective date YYYYMM (if applicable)"
+               FIELDNUMBER="22"
+               FIELDPROPERTY="0"
+               LENGTH="6"
+               NAME="ZERO_BALANCE_DATE"
+               NULLABLE="NULLABLE"
+               PRECISION="6"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Loan modification flag: Y=Modified, N=Not Modified"
+               FIELDNUMBER="23"
+               FIELDPROPERTY="0"
+               LENGTH="1"
+               NAME="MODIFICATION_FLAG"
+               NULLABLE="NULLABLE"
+               PRECISION="1"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Reporting period YYYYMM (delivery month)"
+               FIELDNUMBER="24"
+               FIELDPROPERTY="0"
+               LENGTH="6"
+               NAME="REPORTING_PERIOD"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               DESCRIPTION="Scheduled principal balance after current period payment"
+               FIELDNUMBER="25"
+               FIELDPROPERTY="0"
+               LENGTH="12"
+               NAME="SCHEDULED_PRINCIPAL_BAL"
+               NULLABLE="NULLABLE"
+               PRECISION="12"
+               SCALE="2"/>
+</SOURCE>
+
+<!-- Source 2: Borrower Credit Scores (credit bureau flat file) -->
+<SOURCE BUSINESSNAME="Borrower Credit Bureau Scores"
+        DATABASETYPE="FLAT FILE"
+        DBDNAME=""
+        DESCRIPTION="Credit bureau FICO/VantageScore extract matched to FNMA delivery by LOAN_IDENTIFIER. Comma-delimited with header row."
+        NAME="BORROWER_CREDIT_SCORES"
+        OBJECTVERSION="1"
+        OWNERNAME=""
+        VERSIONNUMBER="1">
+  <TABLEATTRIBUTE NAME="File Type" VALUE="Delimited"/>
+  <TABLEATTRIBUTE NAME="Delimiter" VALUE=","/>
+  <TABLEATTRIBUTE NAME="Row Delimiter" VALUE="LF"/>
+  <TABLEATTRIBUTE NAME="Quote Character" VALUE="Double Quote"/>
+  <TABLEATTRIBUTE NAME="Skip Rows" VALUE="1"/>
+  <TABLEATTRIBUTE NAME="Import Column Names" VALUE="YES"/>
+  <TABLEATTRIBUTE NAME="Code Page" VALUE="UTF-8"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="FNMA loan identifier — join key to delivery file"
+               FIELDNUMBER="1"
+               FIELDPROPERTY="0"
+               LENGTH="13"
+               NAME="LOAN_IDENTIFIER"
+               NULLABLE="NOTNULL"
+               PRECISION="13"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               DESCRIPTION="Borrower 1 FICO score at origination (300-850)"
+               FIELDNUMBER="2"
+               FIELDPROPERTY="0"
+               LENGTH="3"
+               NAME="BORROWER_FICO"
+               NULLABLE="NULLABLE"
+               PRECISION="3"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               DESCRIPTION="Co-borrower FICO score at origination (300-850, null if no co-borrower)"
+               FIELDNUMBER="3"
+               FIELDPROPERTY="0"
+               LENGTH="3"
+               NAME="COBORROWER_FICO"
+               NULLABLE="NULLABLE"
+               PRECISION="3"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               DESCRIPTION="Debt-to-income ratio at origination (e.g., 43.00)"
+               FIELDNUMBER="4"
+               FIELDPROPERTY="0"
+               LENGTH="5"
+               NAME="DTI_RATIO"
+               NULLABLE="NULLABLE"
+               PRECISION="5"
+               SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Credit bureau source: EFX=Equifax, EXP=Experian, TU=TransUnion"
+               FIELDNUMBER="5"
+               FIELDPROPERTY="0"
+               LENGTH="3"
+               NAME="CREDIT_BUREAU"
+               NULLABLE="NULLABLE"
+               PRECISION="3"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Score pull date YYYYMMDD"
+               FIELDNUMBER="6"
+               FIELDPROPERTY="0"
+               LENGTH="8"
+               NAME="SCORE_PULL_DATE"
+               NULLABLE="NULLABLE"
+               PRECISION="8"
+               SCALE="0"/>
+</SOURCE>
+
+<!-- Source 3: Current loan status dimension (Oracle DB — current rows only) -->
+<SOURCE BUSINESSNAME="Current Loan Status Dimension"
+        DATABASETYPE="Oracle"
+        DBDNAME="MORTGAGE_DW"
+        DESCRIPTION="SCD2 dimension holding current active loan status records. Only IS_CURRENT_FLAG=Y rows are sourced — used to detect status changes for SCD2 processing."
+        NAME="DIM_LOAN_STATUS"
+        OBJECTVERSION="1"
+        OWNERNAME="DW"
+        VERSIONNUMBER="1">
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               DESCRIPTION="Surrogate key for current status record"
+               FIELDNUMBER="1"
+               FIELDPROPERTY="0"
+               KEYTYPE="PRIMARY KEY"
+               LENGTH="10"
+               NAME="LOAN_STATUS_KEY"
+               NULLABLE="NOTNULL"
+               PRECISION="10"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="FNMA loan identifier — natural key"
+               FIELDNUMBER="2"
+               FIELDPROPERTY="0"
+               KEYTYPE="NOT A KEY"
+               LENGTH="13"
+               NAME="LOAN_IDENTIFIER"
+               NULLABLE="NOTNULL"
+               PRECISION="13"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Delinquency status when this SCD2 record became current"
+               FIELDNUMBER="3"
+               FIELDPROPERTY="0"
+               KEYTYPE="NOT A KEY"
+               LENGTH="2"
+               NAME="CURRENT_DELINQUENCY_STATUS"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Zero balance code for current record (null if still active)"
+               FIELDNUMBER="4"
+               FIELDPROPERTY="0"
+               KEYTYPE="NOT A KEY"
+               LENGTH="2"
+               NAME="CURRENT_ZERO_BALANCE_CODE"
+               NULLABLE="NULLABLE"
+               PRECISION="2"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Effective date of this SCD2 record YYYYMM"
+               FIELDNUMBER="5"
+               FIELDPROPERTY="0"
+               KEYTYPE="NOT A KEY"
+               LENGTH="6"
+               NAME="EFF_START_PERIOD"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Expiry date — 999912 for current rows"
+               FIELDNUMBER="6"
+               FIELDPROPERTY="0"
+               KEYTYPE="NOT A KEY"
+               LENGTH="6"
+               NAME="EFF_END_PERIOD"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Y=current active record"
+               FIELDNUMBER="7"
+               FIELDPROPERTY="0"
+               KEYTYPE="NOT A KEY"
+               LENGTH="1"
+               NAME="IS_CURRENT_FLAG"
+               NULLABLE="NOTNULL"
+               PRECISION="1"
+               SCALE="0"/>
+</SOURCE>
+
+<!-- ═══════════════════════════════════════════════════════════
+     TARGET DEFINITIONS
+═══════════════════════════════════════════════════════════ -->
+
+<!-- Target 1: Loan delivery fact table -->
+<TARGET BUSINESSNAME="Loan Delivery Fact"
+        CONSTRAINT=""
+        DATABASETYPE="Snowflake"
+        DESCRIPTION="Grain: one row per loan per reporting period. Captures UPB, performance status, credit profile, and derived risk metrics."
+        NAME="FACT_LOAN_DELIVERY"
+        OBJECTVERSION="1"
+        TABLEOPTIONS=""
+        VERSIONNUMBER="1">
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               DESCRIPTION="Surrogate key (sequence)"
+               FIELDNUMBER="1"
+               KEYTYPE="PRIMARY KEY"
+               LENGTH="10"
+               NAME="LOAN_DELIVERY_KEY"
+               NULLABLE="NOTNULL"
+               PRECISION="10"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="2"
+               KEYTYPE="NOT A KEY"
+               LENGTH="13"
+               NAME="LOAN_IDENTIFIER"
+               NULLABLE="NOTNULL"
+               PRECISION="13"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="3"
+               KEYTYPE="NOT A KEY"
+               LENGTH="6"
+               NAME="REPORTING_PERIOD"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="4"
+               KEYTYPE="NOT A KEY"
+               LENGTH="14"
+               NAME="ORIGINAL_UPB"
+               NULLABLE="NOTNULL"
+               PRECISION="14"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="5"
+               KEYTYPE="NOT A KEY"
+               LENGTH="14"
+               NAME="CURRENT_UPB"
+               NULLABLE="NOTNULL"
+               PRECISION="14"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="6"
+               KEYTYPE="NOT A KEY"
+               LENGTH="7"
+               NAME="NOTE_RATE"
+               NULLABLE="NOTNULL"
+               PRECISION="7"
+               SCALE="3"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="7"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="ORIGINAL_LTV"
+               NULLABLE="NOTNULL"
+               PRECISION="5"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="8"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="ORIGINAL_CLTV"
+               NULLABLE="NOTNULL"
+               PRECISION="5"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               FIELDNUMBER="9"
+               KEYTYPE="NOT A KEY"
+               LENGTH="3"
+               NAME="BORROWER_FICO"
+               NULLABLE="NULLABLE"
+               PRECISION="3"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="10"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="DTI_RATIO"
+               NULLABLE="NULLABLE"
+               PRECISION="5"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="11"
+               KEYTYPE="NOT A KEY"
+               LENGTH="2"
+               NAME="DELINQUENCY_STATUS"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="12"
+               KEYTYPE="NOT A KEY"
+               LENGTH="30"
+               NAME="DELINQUENCY_BAND"
+               NULLABLE="NOTNULL"
+               PRECISION="30"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="13"
+               KEYTYPE="NOT A KEY"
+               LENGTH="20"
+               NAME="LOAN_PURPOSE_DESC"
+               NULLABLE="NOTNULL"
+               PRECISION="20"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="14"
+               KEYTYPE="NOT A KEY"
+               LENGTH="20"
+               NAME="PROPERTY_TYPE_DESC"
+               NULLABLE="NOTNULL"
+               PRECISION="20"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="15"
+               KEYTYPE="NOT A KEY"
+               LENGTH="15"
+               NAME="OCCUPANCY_DESC"
+               NULLABLE="NOTNULL"
+               PRECISION="15"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="16"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="MSA_CODE"
+               NULLABLE="NULLABLE"
+               PRECISION="5"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="17"
+               KEYTYPE="NOT A KEY"
+               LENGTH="60"
+               NAME="MSA_NAME"
+               NULLABLE="NULLABLE"
+               PRECISION="60"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="18"
+               KEYTYPE="NOT A KEY"
+               LENGTH="30"
+               NAME="CENSUS_REGION"
+               NULLABLE="NULLABLE"
+               PRECISION="30"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="19"
+               KEYTYPE="NOT A KEY"
+               LENGTH="20"
+               NAME="CREDIT_RISK_TIER"
+               NULLABLE="NOTNULL"
+               PRECISION="20"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="20"
+               KEYTYPE="NOT A KEY"
+               LENGTH="30"
+               NAME="LOAN_CHANGE_TYPE"
+               NULLABLE="NOTNULL"
+               PRECISION="30"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="21"
+               KEYTYPE="NOT A KEY"
+               LENGTH="14"
+               NAME="UPB_REDUCTION"
+               NULLABLE="NULLABLE"
+               PRECISION="14"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="22"
+               KEYTYPE="NOT A KEY"
+               LENGTH="7"
+               NAME="UPB_REDUCTION_PCT"
+               NULLABLE="NULLABLE"
+               PRECISION="7"
+               SCALE="4"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="23"
+               KEYTYPE="NOT A KEY"
+               LENGTH="2"
+               NAME="ZERO_BALANCE_CODE"
+               NULLABLE="NULLABLE"
+               PRECISION="2"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="24"
+               KEYTYPE="NOT A KEY"
+               LENGTH="1"
+               NAME="MODIFICATION_FLAG"
+               NULLABLE="NULLABLE"
+               PRECISION="1"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="25"
+               KEYTYPE="NOT A KEY"
+               LENGTH="2"
+               NAME="PROPERTY_STATE"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="timestamp"
+               FIELDNUMBER="26"
+               KEYTYPE="NOT A KEY"
+               LENGTH="29"
+               NAME="LOAD_TIMESTAMP"
+               NULLABLE="NOTNULL"
+               PRECISION="29"
+               SCALE="9"/>
+</TARGET>
+
+<!-- Target 2: SCD2 loan status history -->
+<TARGET BUSINESSNAME="Loan Status History (SCD2)"
+        CONSTRAINT=""
+        DATABASETYPE="Snowflake"
+        DESCRIPTION="SCD Type 2 dimension for loan delinquency / zero-balance status changes. One row per loan per status version. Expired rows have IS_CURRENT_FLAG=N."
+        NAME="DIM_LOAN_STATUS_HIST"
+        OBJECTVERSION="1"
+        TABLEOPTIONS=""
+        VERSIONNUMBER="1">
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               DESCRIPTION="Surrogate key (sequence)"
+               FIELDNUMBER="1"
+               KEYTYPE="PRIMARY KEY"
+               LENGTH="10"
+               NAME="LOAN_STATUS_KEY"
+               NULLABLE="NOTNULL"
+               PRECISION="10"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="2"
+               KEYTYPE="NOT A KEY"
+               LENGTH="13"
+               NAME="LOAN_IDENTIFIER"
+               NULLABLE="NOTNULL"
+               PRECISION="13"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="3"
+               KEYTYPE="NOT A KEY"
+               LENGTH="2"
+               NAME="DELINQUENCY_STATUS"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="4"
+               KEYTYPE="NOT A KEY"
+               LENGTH="2"
+               NAME="ZERO_BALANCE_CODE"
+               NULLABLE="NULLABLE"
+               PRECISION="2"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="Reporting period when this status became effective YYYYMM"
+               FIELDNUMBER="5"
+               KEYTYPE="NOT A KEY"
+               LENGTH="6"
+               NAME="EFF_START_PERIOD"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="999912 for current rows; YYYYMM for expired rows"
+               FIELDNUMBER="6"
+               KEYTYPE="NOT A KEY"
+               LENGTH="6"
+               NAME="EFF_END_PERIOD"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="7"
+               KEYTYPE="NOT A KEY"
+               LENGTH="1"
+               NAME="IS_CURRENT_FLAG"
+               NULLABLE="NOTNULL"
+               PRECISION="1"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               DESCRIPTION="SCD2 action: INSERT_NEW or EXPIRE_PREV"
+               FIELDNUMBER="8"
+               KEYTYPE="NOT A KEY"
+               LENGTH="15"
+               NAME="SCD2_ACTION"
+               NULLABLE="NOTNULL"
+               PRECISION="15"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="timestamp"
+               FIELDNUMBER="9"
+               KEYTYPE="NOT A KEY"
+               LENGTH="29"
+               NAME="LOAD_TIMESTAMP"
+               NULLABLE="NOTNULL"
+               PRECISION="29"
+               SCALE="9"/>
+</TARGET>
+
+<!-- Target 3: Portfolio summary aggregate -->
+<TARGET BUSINESSNAME="Portfolio Summary Aggregate"
+        CONSTRAINT=""
+        DATABASETYPE="Snowflake"
+        DESCRIPTION="Reporting-period-level aggregate: UPB totals, loan counts, delinquency buckets, credit tier breakdown. Truncate-and-reload per reporting period."
+        NAME="AGG_PORTFOLIO_SUMMARY"
+        OBJECTVERSION="1"
+        TABLEOPTIONS=""
+        VERSIONNUMBER="1">
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="1"
+               KEYTYPE="PRIMARY KEY"
+               LENGTH="6"
+               NAME="REPORTING_PERIOD"
+               NULLABLE="NOTNULL"
+               PRECISION="6"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="2"
+               KEYTYPE="PRIMARY KEY"
+               LENGTH="30"
+               NAME="DELINQUENCY_BAND"
+               NULLABLE="NOTNULL"
+               PRECISION="30"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="3"
+               KEYTYPE="PRIMARY KEY"
+               LENGTH="20"
+               NAME="CREDIT_RISK_TIER"
+               NULLABLE="NOTNULL"
+               PRECISION="20"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="string"
+               FIELDNUMBER="4"
+               KEYTYPE="PRIMARY KEY"
+               LENGTH="2"
+               NAME="PROPERTY_STATE"
+               NULLABLE="NOTNULL"
+               PRECISION="2"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               FIELDNUMBER="5"
+               KEYTYPE="NOT A KEY"
+               LENGTH="10"
+               NAME="LOAN_COUNT"
+               NULLABLE="NOTNULL"
+               PRECISION="10"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="6"
+               KEYTYPE="NOT A KEY"
+               LENGTH="18"
+               NAME="TOTAL_UPB"
+               NULLABLE="NOTNULL"
+               PRECISION="18"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="7"
+               KEYTYPE="NOT A KEY"
+               LENGTH="7"
+               NAME="AVG_NOTE_RATE"
+               NULLABLE="NOTNULL"
+               PRECISION="7"
+               SCALE="3"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="8"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="AVG_LTV"
+               NULLABLE="NOTNULL"
+               PRECISION="5"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="decimal"
+               FIELDNUMBER="9"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="AVG_DTI"
+               NULLABLE="NULLABLE"
+               PRECISION="5"
+               SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               FIELDNUMBER="10"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="NEW_LOAN_COUNT"
+               NULLABLE="NOTNULL"
+               PRECISION="5"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="integer"
+               FIELDNUMBER="11"
+               KEYTYPE="NOT A KEY"
+               LENGTH="5"
+               NAME="STATUS_CHANGED_COUNT"
+               NULLABLE="NOTNULL"
+               PRECISION="5"
+               SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME=""
+               DATATYPE="timestamp"
+               FIELDNUMBER="12"
+               KEYTYPE="NOT A KEY"
+               LENGTH="29"
+               NAME="LOAD_TIMESTAMP"
+               NULLABLE="NOTNULL"
+               PRECISION="29"
+               SCALE="9"/>
+</TARGET>
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAPPING
+═══════════════════════════════════════════════════════════ -->
+<MAPPING DESCRIPTION="SCD2 FNMA loan delivery pipeline. Joins delivery file + credit scores, looks up MSA metadata, derives risk tiers and delinquency bands, routes by change type (NEW/CHANGED/UNCHANGED), writes FACT + SCD2 DIM + portfolio aggregate."
+         ISVALID="YES"
+         NAME="m_FNMA_LOAN_DELIVERY_SCD2"
+         OBJECTVERSION="1"
+         VERSIONNUMBER="1">
+
+  <!-- ── Source Qualifier 1: FNMA Delivery File ── -->
+  <TRANSFORMATION DESCRIPTION="Read all columns from FNMA monthly delivery flat file. Filter out rows with null LOAN_IDENTIFIER or REPORTING_PERIOD. Apply basic numeric sanity: CURRENT_UPB &gt;= 0."
+                  NAME="SQ_FNMA_DELIVERY"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Source Qualifier"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Source: FNMA_LOAN_DELIVERY.LOAN_IDENTIFIER"
+                    LENGTH="13"
+                    NAME="LOAN_IDENTIFIER"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="13"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="18"
+                    NAME="MERS_MIN"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="18"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="12"
+                    NAME="ORIGINATOR_ID"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="12"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="12"
+                    NAME="SERVICER_ID"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="12"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    LENGTH="12"
+                    NAME="ORIGINAL_UPB"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="12"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    LENGTH="12"
+                    NAME="CURRENT_UPB"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="12"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    LENGTH="7"
+                    NAME="NOTE_RATE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="7"
+                    SCALE="3"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="6"
+                    NAME="ORIGINATION_DATE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="6"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="6"
+                    NAME="FIRST_PAYMENT_DATE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="6"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    LENGTH="3"
+                    NAME="ORIGINAL_TERM"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="3"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    LENGTH="5"
+                    NAME="ORIGINAL_LTV"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="5"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    LENGTH="5"
+                    NAME="ORIGINAL_CLTV"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="5"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="1"
+                    NAME="LOAN_PURPOSE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="1"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="2"
+                    NAME="PROPERTY_TYPE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="2"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="1"
+                    NAME="OCCUPANCY_STATUS"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="1"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="5"
+                    NAME="PROPERTY_ZIP"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="5"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="5"
+                    NAME="MSA_CODE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="5"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="2"
+                    NAME="PROPERTY_STATE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="2"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    LENGTH="1"
+                    NAME="NUMBER_OF_UNITS"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="1"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="2"
+                    NAME="DELINQUENCY_STATUS"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="2"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="2"
+                    NAME="ZERO_BALANCE_CODE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="2"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="6"
+                    NAME="ZERO_BALANCE_DATE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="6"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="1"
+                    NAME="MODIFICATION_FLAG"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="1"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="6"
+                    NAME="REPORTING_PERIOD"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="6"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    LENGTH="12"
+                    NAME="SCHEDULED_PRINCIPAL_BAL"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="12"
+                    SCALE="2"/>
+    <TABLEATTRIBUTE NAME="Filter" VALUE="LOAN_IDENTIFIER IS NOT NULL AND REPORTING_PERIOD IS NOT NULL AND CURRENT_UPB &gt;= 0"/>
+  </TRANSFORMATION>
+
+  <!-- ── Source Qualifier 2: Credit Scores File ── -->
+  <TRANSFORMATION DESCRIPTION="Read borrower FICO and DTI from credit bureau flat file."
+                  NAME="SQ_CREDIT_SCORES"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Source Qualifier"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="13"
+                    NAME="LOAN_IDENTIFIER"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="13"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    LENGTH="3"
+                    NAME="BORROWER_FICO"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="3"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    LENGTH="3"
+                    NAME="COBORROWER_FICO"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="3"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    LENGTH="5"
+                    NAME="DTI_RATIO"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="5"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="3"
+                    NAME="CREDIT_BUREAU"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="3"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="8"
+                    NAME="SCORE_PULL_DATE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="8"
+                    SCALE="0"/>
+  </TRANSFORMATION>
+
+  <!-- ── Source Qualifier 3: DIM_LOAN_STATUS (current rows only) ── -->
+  <TRANSFORMATION DESCRIPTION="Read current SCD2 records from DIM_LOAN_STATUS. SQL override restricts to IS_CURRENT_FLAG = 'Y' to avoid pulling expired rows."
+                  NAME="SQ_DIM_LOAN_STATUS"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Source Qualifier"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    LENGTH="10"
+                    NAME="LOAN_STATUS_KEY"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="10"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="13"
+                    NAME="DIM_LOAN_IDENTIFIER"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="13"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="2"
+                    NAME="CURRENT_DELINQUENCY_STATUS"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="2"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="2"
+                    NAME="CURRENT_ZERO_BALANCE_CODE"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="2"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    LENGTH="6"
+                    NAME="EFF_START_PERIOD"
+                    PICTURETEXT=""
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="6"
+                    SCALE="0"/>
+    <TABLEATTRIBUTE NAME="Sql Query" VALUE="SELECT LOAN_STATUS_KEY, LOAN_IDENTIFIER AS DIM_LOAN_IDENTIFIER, CURRENT_DELINQUENCY_STATUS, CURRENT_ZERO_BALANCE_CODE, EFF_START_PERIOD FROM DW.DIM_LOAN_STATUS WHERE IS_CURRENT_FLAG = 'Y'"/>
+  </TRANSFORMATION>
+
+  <!-- ── Joiner: Delivery file (master) LEFT OUTER JOIN credit scores (detail) ── -->
+  <TRANSFORMATION DESCRIPTION="Left outer join FNMA delivery (master) to credit bureau scores (detail) on LOAN_IDENTIFIER. Left outer preserves all delivery rows even if no credit score record exists."
+                  NAME="JNR_LOAN_CREDIT"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Joiner"
+                  VERSIONNUMBER="1">
+    <!-- Master (FNMA delivery) ports -->
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="13" NAME="M_LOAN_IDENTIFIER" PORTTYPE="INPUT" PRECISION="13" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="12" NAME="M_SERVICER_ID" PORTTYPE="INPUT" PRECISION="12" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="M_ORIGINAL_UPB" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="M_CURRENT_UPB" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="7" NAME="M_NOTE_RATE" PORTTYPE="INPUT" PRECISION="7" SCALE="3"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="M_ORIGINATION_DATE" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="M_ORIGINAL_TERM" PORTTYPE="INPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="M_ORIGINAL_LTV" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="M_ORIGINAL_CLTV" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="M_LOAN_PURPOSE" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="M_PROPERTY_TYPE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="M_OCCUPANCY_STATUS" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="5" NAME="M_PROPERTY_ZIP" PORTTYPE="INPUT" PRECISION="5" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="5" NAME="M_MSA_CODE" PORTTYPE="INPUT" PRECISION="5" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="M_PROPERTY_STATE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="1" NAME="M_NUMBER_OF_UNITS" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="M_DELINQUENCY_STATUS" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="M_ZERO_BALANCE_CODE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="M_ZERO_BALANCE_DATE" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="M_MODIFICATION_FLAG" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="M_REPORTING_PERIOD" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="M_SCHEDULED_PRINCIPAL_BAL" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <!-- Detail (credit scores) ports -->
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="13" NAME="D_LOAN_IDENTIFIER" PORTTYPE="INPUT" PRECISION="13" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="D_BORROWER_FICO" PORTTYPE="INPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="D_COBORROWER_FICO" PORTTYPE="INPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="D_DTI_RATIO" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <!-- Output ports (master wins on all fields, detail adds credit columns) -->
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="13" NAME="LOAN_IDENTIFIER" PORTTYPE="OUTPUT" PRECISION="13" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="12" NAME="SERVICER_ID" PORTTYPE="OUTPUT" PRECISION="12" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="ORIGINAL_UPB" PORTTYPE="OUTPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="CURRENT_UPB" PORTTYPE="OUTPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="7" NAME="NOTE_RATE" PORTTYPE="OUTPUT" PRECISION="7" SCALE="3"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="ORIGINATION_DATE" PORTTYPE="OUTPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="ORIGINAL_TERM" PORTTYPE="OUTPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="ORIGINAL_LTV" PORTTYPE="OUTPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="ORIGINAL_CLTV" PORTTYPE="OUTPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="LOAN_PURPOSE" PORTTYPE="OUTPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="PROPERTY_TYPE" PORTTYPE="OUTPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="OCCUPANCY_STATUS" PORTTYPE="OUTPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="5" NAME="MSA_CODE" PORTTYPE="OUTPUT" PRECISION="5" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="PROPERTY_STATE" PORTTYPE="OUTPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="1" NAME="NUMBER_OF_UNITS" PORTTYPE="OUTPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="DELINQUENCY_STATUS" PORTTYPE="OUTPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="ZERO_BALANCE_CODE" PORTTYPE="OUTPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="ZERO_BALANCE_DATE" PORTTYPE="OUTPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="MODIFICATION_FLAG" PORTTYPE="OUTPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="REPORTING_PERIOD" PORTTYPE="OUTPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="SCHEDULED_PRINCIPAL_BAL" PORTTYPE="OUTPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="BORROWER_FICO" PORTTYPE="OUTPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="COBORROWER_FICO" PORTTYPE="OUTPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="DTI_RATIO" PORTTYPE="OUTPUT" PRECISION="5" SCALE="2"/>
+    <TABLEATTRIBUTE NAME="Join Type" VALUE="Left Outer Join"/>
+    <TABLEATTRIBUTE NAME="Join Condition" VALUE="M_LOAN_IDENTIFIER = D_LOAN_IDENTIFIER"/>
+    <TABLEATTRIBUTE NAME="Master Source" VALUE="SQ_FNMA_DELIVERY"/>
+  </TRANSFORMATION>
+
+  <!-- ── Lookup: MSA Properties Reference ── -->
+  <TRANSFORMATION DESCRIPTION="Look up MSA_CODE in REF_MSA_PROPERTIES to resolve metro name, census region, and state. Return null values if MSA_CODE not found (many rural loans have no MSA)."
+                  NAME="LKP_MSA_PROPERTIES"
+                  OBJECTVERSION="1"
+                  REUSABLE="YES"
+                  TYPE="Lookup Procedure"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="5" NAME="IN_MSA_CODE" PORTTYPE="INPUT" PRECISION="5" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="60" NAME="OUT_MSA_NAME" PORTTYPE="OUTPUT" PRECISION="60" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="30" NAME="OUT_CENSUS_REGION" PORTTYPE="OUTPUT" PRECISION="30" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="OUT_MSA_STATE" PORTTYPE="OUTPUT" PRECISION="2" SCALE="0"/>
+    <TABLEATTRIBUTE NAME="Lookup table name" VALUE="REF_MSA_PROPERTIES"/>
+    <TABLEATTRIBUTE NAME="Lookup condition" VALUE="IN_MSA_CODE = MSA_CODE"/>
+    <TABLEATTRIBUTE NAME="Lookup policy on multiple match" VALUE="Use first value"/>
+    <TABLEATTRIBUTE NAME="Lookup cache" VALUE="Static"/>
+  </TRANSFORMATION>
+
+  <!-- ── Expression: Derivations, SCD2 comparison, risk tiers ── -->
+  <TRANSFORMATION DESCRIPTION="Core business logic: (1) Expand code fields to descriptions. (2) Derive DELINQUENCY_BAND, CREDIT_RISK_TIER, LOAN_CHANGE_TYPE by comparing to DIM values. (3) Compute UPB reduction metrics. (4) Set SCD2 fields EFF_START_PERIOD, EFF_END_PERIOD, IS_CURRENT_FLAG."
+                  NAME="EXP_DERIVE"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Expression"
+                  VERSIONNUMBER="1">
+    <!-- Pass-through inputs from joiner -->
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="13" NAME="LOAN_IDENTIFIER" PORTTYPE="INPUT" PRECISION="13" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="ORIGINAL_UPB" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="CURRENT_UPB" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="7" NAME="NOTE_RATE" PORTTYPE="INPUT" PRECISION="7" SCALE="3"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="ORIGINAL_LTV" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="ORIGINAL_CLTV" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="LOAN_PURPOSE" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="PROPERTY_TYPE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="OCCUPANCY_STATUS" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="5" NAME="MSA_CODE" PORTTYPE="INPUT" PRECISION="5" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="PROPERTY_STATE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="DELINQUENCY_STATUS" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="ZERO_BALANCE_CODE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="ZERO_BALANCE_DATE" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="MODIFICATION_FLAG" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="REPORTING_PERIOD" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="BORROWER_FICO" PORTTYPE="INPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="COBORROWER_FICO" PORTTYPE="INPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="DTI_RATIO" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <!-- Lookup results -->
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="60" NAME="MSA_NAME" PORTTYPE="INPUT" PRECISION="60" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="30" NAME="CENSUS_REGION" PORTTYPE="INPUT" PRECISION="30" SCALE="0"/>
+    <!-- SCD2 comparison inputs from DIM -->
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="10" NAME="DIM_LOAN_STATUS_KEY" PORTTYPE="INPUT" PRECISION="10" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="DIM_DELINQUENCY_STATUS" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="DIM_ZERO_BALANCE_CODE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="DIM_EFF_START_PERIOD" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+
+    <!-- ── Derived output fields ── -->
+
+    <!-- Loan purpose decode -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Decode LOAN_PURPOSE code to description"
+                    EXPRESSION="IIF(LOAN_PURPOSE = 'P', 'Purchase', IIF(LOAN_PURPOSE = 'C', 'Cash-Out Refinance', IIF(LOAN_PURPOSE = 'N', 'No-Cash Refinance', IIF(LOAN_PURPOSE = 'O', 'Other', 'Unknown'))))"
+                    LENGTH="20"
+                    NAME="LOAN_PURPOSE_DESC"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="20"
+                    SCALE="0"/>
+
+    <!-- Property type decode -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Decode PROPERTY_TYPE code to description"
+                    EXPRESSION="IIF(PROPERTY_TYPE = 'SF', 'Single Family', IIF(PROPERTY_TYPE = 'CO', 'Condominium', IIF(PROPERTY_TYPE = 'PU', 'PUD', IIF(PROPERTY_TYPE = 'MH', 'Manufactured Housing', IIF(PROPERTY_TYPE = 'CP', 'Co-op', 'Other')))))"
+                    LENGTH="20"
+                    NAME="PROPERTY_TYPE_DESC"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="20"
+                    SCALE="0"/>
+
+    <!-- Occupancy decode -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Decode OCCUPANCY_STATUS code to description"
+                    EXPRESSION="IIF(OCCUPANCY_STATUS = 'P', 'Primary Residence', IIF(OCCUPANCY_STATUS = 'S', 'Second Home', IIF(OCCUPANCY_STATUS = 'I', 'Investment Property', 'Unknown')))"
+                    LENGTH="15"
+                    NAME="OCCUPANCY_DESC"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="15"
+                    SCALE="0"/>
+
+    <!-- Delinquency band — per FNMA standard DPD buckets -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Group DELINQUENCY_STATUS into standard DPD performance bands used in FNMA MBS reports"
+                    EXPRESSION="IIF(DELINQUENCY_STATUS = '0', 'CURRENT', IIF(DELINQUENCY_STATUS IN ('1','2'), '30-59 DPD', IIF(DELINQUENCY_STATUS IN ('3','4','5'), '60-89 DPD', IIF(DELINQUENCY_STATUS IN ('6','7','8','9','10','11','12'), '90+ DPD', IIF(DELINQUENCY_STATUS = 'XX', 'FORECLOSURE', IIF(DELINQUENCY_STATUS = 'FC', 'REO', 'LIQUIDATED'))))))"
+                    LENGTH="30"
+                    NAME="DELINQUENCY_BAND"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="30"
+                    SCALE="0"/>
+
+    <!-- Credit risk tier — uses representative FICO (lower of borrower/co-borrower per FNMA guidelines, co-borrower ignored if null) -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Assign CREDIT_RISK_TIER based on representative FICO score. Representative FICO = lower of borrower and co-borrower if both present, otherwise borrower FICO. Tiers: SUPER_PRIME &gt;= 780, PRIME 720-779, ALT_A 660-719, SUBPRIME 620-659, DEEP_SUBPRIME &lt; 620, UNKNOWN if null."
+                    EXPRESSION="IIF(ISNULL(BORROWER_FICO), 'UNKNOWN', IIF(IIF(ISNULL(COBORROWER_FICO), BORROWER_FICO, IIF(COBORROWER_FICO &lt; BORROWER_FICO, COBORROWER_FICO, BORROWER_FICO)) &gt;= 780, 'SUPER_PRIME', IIF(IIF(ISNULL(COBORROWER_FICO), BORROWER_FICO, IIF(COBORROWER_FICO &lt; BORROWER_FICO, COBORROWER_FICO, BORROWER_FICO)) &gt;= 720, 'PRIME', IIF(IIF(ISNULL(COBORROWER_FICO), BORROWER_FICO, IIF(COBORROWER_FICO &lt; BORROWER_FICO, COBORROWER_FICO, BORROWER_FICO)) &gt;= 660, 'ALT_A', IIF(IIF(ISNULL(COBORROWER_FICO), BORROWER_FICO, IIF(COBORROWER_FICO &lt; BORROWER_FICO, COBORROWER_FICO, BORROWER_FICO)) &gt;= 620, 'SUBPRIME', 'DEEP_SUBPRIME')))))"
+                    LENGTH="20"
+                    NAME="CREDIT_RISK_TIER"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="20"
+                    SCALE="0"/>
+
+    <!-- UPB reduction (amortisation + prepayment) -->
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Absolute UPB reduction since origination"
+                    EXPRESSION="ORIGINAL_UPB - CURRENT_UPB"
+                    LENGTH="14"
+                    NAME="UPB_REDUCTION"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="14"
+                    SCALE="2"/>
+
+    <!-- UPB reduction % -->
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Percentage of original UPB that has been paid down"
+                    EXPRESSION="IIF(ORIGINAL_UPB = 0, 0, (ORIGINAL_UPB - CURRENT_UPB) / ORIGINAL_UPB)"
+                    LENGTH="7"
+                    NAME="UPB_REDUCTION_PCT"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="7"
+                    SCALE="4"/>
+
+    <!-- SCD2 change detection: compare incoming status to DIM current record -->
+    <!-- NEW_LOAN:       no matching dim record (DIM_LOAN_STATUS_KEY is null)  -->
+    <!-- STATUS_CHANGED: dim record exists and either DELINQUENCY_STATUS or ZERO_BALANCE_CODE changed -->
+    <!-- UNCHANGED:      dim record exists and both fields match               -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Classify loan change type for Router and SCD2 logic. NEW_LOAN = first appearance in DIM. STATUS_CHANGED = existing loan with delinquency or zero-balance code change. UNCHANGED = no material status change this period."
+                    EXPRESSION="IIF(ISNULL(DIM_LOAN_STATUS_KEY), 'NEW_LOAN', IIF(DELINQUENCY_STATUS != DIM_DELINQUENCY_STATUS OR (NOT ISNULL(ZERO_BALANCE_CODE) AND ZERO_BALANCE_CODE != DIM_ZERO_BALANCE_CODE) OR (ISNULL(ZERO_BALANCE_CODE) AND NOT ISNULL(DIM_ZERO_BALANCE_CODE)), 'STATUS_CHANGED', 'UNCHANGED'))"
+                    LENGTH="30"
+                    NAME="LOAN_CHANGE_TYPE"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="30"
+                    SCALE="0"/>
+
+    <!-- SCD2: effective start period for a new/changed record -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="SCD2 effective start — current REPORTING_PERIOD for new/changed rows"
+                    EXPRESSION="REPORTING_PERIOD"
+                    LENGTH="6"
+                    NAME="NEW_EFF_START_PERIOD"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="6"
+                    SCALE="0"/>
+
+    <!-- SCD2: end period for the record being expired (previous current row) -->
+    <!-- Prior period = REPORTING_PERIOD - 1 month, formatted YYYYMM -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="SCD2 expiry period for the PREVIOUS current row. Computed as REPORTING_PERIOD minus 1 month. TO_CHAR(ADD_TO_DATE(TO_DATE(REPORTING_PERIOD,'YYYYMM'),'MM',-1),'YYYYMM')."
+                    EXPRESSION="TO_CHAR(ADD_TO_DATE(TO_DATE(REPORTING_PERIOD,'YYYYMM'),'MM',-1),'YYYYMM')"
+                    LENGTH="6"
+                    NAME="EXPIRE_EFF_END_PERIOD"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="6"
+                    SCALE="0"/>
+
+    <!-- Pass-through existing dim surrogate key (needed to expire the old row) -->
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Surrogate key of the existing DIM record to be expired (null for NEW_LOAN)"
+                    EXPRESSION="DIM_LOAN_STATUS_KEY"
+                    LENGTH="10"
+                    NAME="EXISTING_LOAN_STATUS_KEY"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="10"
+                    SCALE="0"/>
+  </TRANSFORMATION>
+
+  <!-- ── Router: Branch by LOAN_CHANGE_TYPE ── -->
+  <TRANSFORMATION DESCRIPTION="Route rows to three output groups based on LOAN_CHANGE_TYPE. NEW_LOAN group feeds FACT + AGG + new DIM row. STATUS_CHANGED group feeds FACT + new DIM row + DIM expiry update. UNCHANGED group feeds FACT only."
+                  NAME="RTR_LOAN_CHANGE"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Router"
+                  VERSIONNUMBER="1">
+    <!-- All expression outputs are passed through as router inputs -->
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="13" NAME="LOAN_IDENTIFIER" PORTTYPE="INPUT" PRECISION="13" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="REPORTING_PERIOD" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="ORIGINAL_UPB" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="CURRENT_UPB" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="7" NAME="NOTE_RATE" PORTTYPE="INPUT" PRECISION="7" SCALE="3"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="ORIGINAL_LTV" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="ORIGINAL_CLTV" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="3" NAME="BORROWER_FICO" PORTTYPE="INPUT" PRECISION="3" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="DTI_RATIO" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="DELINQUENCY_STATUS" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="30" NAME="DELINQUENCY_BAND" PORTTYPE="INPUT" PRECISION="30" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="20" NAME="LOAN_PURPOSE_DESC" PORTTYPE="INPUT" PRECISION="20" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="20" NAME="PROPERTY_TYPE_DESC" PORTTYPE="INPUT" PRECISION="20" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="15" NAME="OCCUPANCY_DESC" PORTTYPE="INPUT" PRECISION="15" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="5" NAME="MSA_CODE" PORTTYPE="INPUT" PRECISION="5" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="60" NAME="MSA_NAME" PORTTYPE="INPUT" PRECISION="60" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="30" NAME="CENSUS_REGION" PORTTYPE="INPUT" PRECISION="30" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="20" NAME="CREDIT_RISK_TIER" PORTTYPE="INPUT" PRECISION="20" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="30" NAME="LOAN_CHANGE_TYPE" PORTTYPE="INPUT" PRECISION="30" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="14" NAME="UPB_REDUCTION" PORTTYPE="INPUT" PRECISION="14" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="7" NAME="UPB_REDUCTION_PCT" PORTTYPE="INPUT" PRECISION="7" SCALE="4"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="ZERO_BALANCE_CODE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="1" NAME="MODIFICATION_FLAG" PORTTYPE="INPUT" PRECISION="1" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="PROPERTY_STATE" PORTTYPE="INPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="NEW_EFF_START_PERIOD" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="EXPIRE_EFF_END_PERIOD" PORTTYPE="INPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="10" NAME="EXISTING_LOAN_STATUS_KEY" PORTTYPE="INPUT" PRECISION="10" SCALE="0"/>
+    <!-- Router groups -->
+    <TABLEATTRIBUTE NAME="GROUP_1_NAME" VALUE="NEW_LOAN"/>
+    <TABLEATTRIBUTE NAME="GROUP_1_FILTER" VALUE="LOAN_CHANGE_TYPE = 'NEW_LOAN'"/>
+    <TABLEATTRIBUTE NAME="GROUP_2_NAME" VALUE="STATUS_CHANGED"/>
+    <TABLEATTRIBUTE NAME="GROUP_2_FILTER" VALUE="LOAN_CHANGE_TYPE = 'STATUS_CHANGED'"/>
+    <TABLEATTRIBUTE NAME="GROUP_3_NAME" VALUE="UNCHANGED"/>
+    <TABLEATTRIBUTE NAME="GROUP_3_FILTER" VALUE="LOAN_CHANGE_TYPE = 'UNCHANGED'"/>
+    <TABLEATTRIBUTE NAME="DEFAULT_GROUP" VALUE="UNCHANGED"/>
+  </TRANSFORMATION>
+
+  <!-- ── Aggregator: Portfolio summary (runs on ALL loans post-route — uses pass-through from all groups) ── -->
+  <TRANSFORMATION DESCRIPTION="Aggregate ALL delivery rows (new + changed + unchanged) by REPORTING_PERIOD, DELINQUENCY_BAND, CREDIT_RISK_TIER, PROPERTY_STATE. Compute loan counts, total UPB, averages. Also count new loans and changed loans separately for reporting."
+                  NAME="AGG_PORTFOLIO"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Aggregator"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="6" NAME="REPORTING_PERIOD" PORTTYPE="INPUT/OUTPUT" PRECISION="6" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="30" NAME="DELINQUENCY_BAND" PORTTYPE="INPUT/OUTPUT" PRECISION="30" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="20" NAME="CREDIT_RISK_TIER" PORTTYPE="INPUT/OUTPUT" PRECISION="20" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="2" NAME="PROPERTY_STATE" PORTTYPE="INPUT/OUTPUT" PRECISION="2" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="CURRENT_UPB" PORTTYPE="INPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="7" NAME="NOTE_RATE" PORTTYPE="INPUT" PRECISION="7" SCALE="3"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="ORIGINAL_LTV" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="5" NAME="DTI_RATIO" PORTTYPE="INPUT" PRECISION="5" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string" LENGTH="30" NAME="LOAN_CHANGE_TYPE" PORTTYPE="INPUT" PRECISION="30" SCALE="0"/>
+    <!-- Aggregated outputs -->
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Total loan count per group"
+                    EXPRESSION="COUNT(1)"
+                    LENGTH="10"
+                    NAME="LOAN_COUNT"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="10"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Sum of current UPB per group"
+                    EXPRESSION="SUM(CURRENT_UPB)"
+                    LENGTH="18"
+                    NAME="TOTAL_UPB"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="18"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Average note rate per group"
+                    EXPRESSION="AVG(NOTE_RATE)"
+                    LENGTH="7"
+                    NAME="AVG_NOTE_RATE"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="7"
+                    SCALE="3"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Average original LTV per group"
+                    EXPRESSION="AVG(ORIGINAL_LTV)"
+                    LENGTH="5"
+                    NAME="AVG_LTV"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="5"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Average DTI ratio per group (null DTIs excluded)"
+                    EXPRESSION="AVG(DTI_RATIO)"
+                    LENGTH="5"
+                    NAME="AVG_DTI"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="5"
+                    SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Count of new loans (first delivery) within group"
+                    EXPRESSION="SUM(IIF(LOAN_CHANGE_TYPE = 'NEW_LOAN', 1, 0))"
+                    LENGTH="5"
+                    NAME="NEW_LOAN_COUNT"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="5"
+                    SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Count of status-changed loans within group"
+                    EXPRESSION="SUM(IIF(LOAN_CHANGE_TYPE = 'STATUS_CHANGED', 1, 0))"
+                    LENGTH="5"
+                    NAME="STATUS_CHANGED_COUNT"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="5"
+                    SCALE="0"/>
+    <TABLEATTRIBUTE NAME="Group By" VALUE="REPORTING_PERIOD, DELINQUENCY_BAND, CREDIT_RISK_TIER, PROPERTY_STATE"/>
+    <TABLEATTRIBUTE NAME="Sorted Input" VALUE="NO"/>
+  </TRANSFORMATION>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       CONNECTOR DEFINITIONS (data flow wiring)
+  ═══════════════════════════════════════════════════════════ -->
+
+  <!-- SQ_FNMA → JNR (master ports) -->
+  <CONNECTOR FROMFIELD="LOAN_IDENTIFIER" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_LOAN_IDENTIFIER" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="SERVICER_ID" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_SERVICER_ID" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_UPB" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_ORIGINAL_UPB" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="CURRENT_UPB" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_CURRENT_UPB" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="NOTE_RATE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_NOTE_RATE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="ORIGINATION_DATE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_ORIGINATION_DATE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_TERM" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_ORIGINAL_TERM" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_LTV" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_ORIGINAL_LTV" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_CLTV" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_ORIGINAL_CLTV" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="LOAN_PURPOSE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_LOAN_PURPOSE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_PROPERTY_TYPE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="OCCUPANCY_STATUS" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_OCCUPANCY_STATUS" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="PROPERTY_ZIP" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_PROPERTY_ZIP" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="MSA_CODE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_MSA_CODE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="PROPERTY_STATE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_PROPERTY_STATE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="NUMBER_OF_UNITS" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_NUMBER_OF_UNITS" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_STATUS" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_DELINQUENCY_STATUS" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="ZERO_BALANCE_CODE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_ZERO_BALANCE_CODE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="ZERO_BALANCE_DATE" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_ZERO_BALANCE_DATE" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="MODIFICATION_FLAG" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_MODIFICATION_FLAG" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="REPORTING_PERIOD" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_REPORTING_PERIOD" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="SCHEDULED_PRINCIPAL_BAL" FROMINSTANCE="SQ_FNMA_DELIVERY" FROMINSTANCETYPE="Source Qualifier" TOFIELD="M_SCHEDULED_PRINCIPAL_BAL" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+
+  <!-- SQ_CREDIT → JNR (detail ports) -->
+  <CONNECTOR FROMFIELD="LOAN_IDENTIFIER" FROMINSTANCE="SQ_CREDIT_SCORES" FROMINSTANCETYPE="Source Qualifier" TOFIELD="D_LOAN_IDENTIFIER" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="BORROWER_FICO" FROMINSTANCE="SQ_CREDIT_SCORES" FROMINSTANCETYPE="Source Qualifier" TOFIELD="D_BORROWER_FICO" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="COBORROWER_FICO" FROMINSTANCE="SQ_CREDIT_SCORES" FROMINSTANCETYPE="Source Qualifier" TOFIELD="D_COBORROWER_FICO" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+  <CONNECTOR FROMFIELD="DTI_RATIO" FROMINSTANCE="SQ_CREDIT_SCORES" FROMINSTANCETYPE="Source Qualifier" TOFIELD="D_DTI_RATIO" TOINSTANCE="JNR_LOAN_CREDIT" TOINSTANCETYPE="Joiner"/>
+
+  <!-- JNR → LKP -->
+  <CONNECTOR FROMFIELD="MSA_CODE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="IN_MSA_CODE" TOINSTANCE="LKP_MSA_PROPERTIES" TOINSTANCETYPE="Lookup Procedure"/>
+
+  <!-- JNR → EXP_DERIVE (pass-through from joiner) -->
+  <CONNECTOR FROMFIELD="LOAN_IDENTIFIER" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="LOAN_IDENTIFIER" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_UPB" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="ORIGINAL_UPB" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="CURRENT_UPB" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="CURRENT_UPB" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="NOTE_RATE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="NOTE_RATE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_LTV" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="ORIGINAL_LTV" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_CLTV" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="ORIGINAL_CLTV" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="LOAN_PURPOSE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="LOAN_PURPOSE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="PROPERTY_TYPE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="OCCUPANCY_STATUS" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="OCCUPANCY_STATUS" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="MSA_CODE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="MSA_CODE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="PROPERTY_STATE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="PROPERTY_STATE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_STATUS" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="DELINQUENCY_STATUS" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="ZERO_BALANCE_CODE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="ZERO_BALANCE_CODE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="ZERO_BALANCE_DATE" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="ZERO_BALANCE_DATE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="MODIFICATION_FLAG" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="MODIFICATION_FLAG" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="REPORTING_PERIOD" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="REPORTING_PERIOD" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="BORROWER_FICO" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="BORROWER_FICO" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="COBORROWER_FICO" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="COBORROWER_FICO" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="DTI_RATIO" FROMINSTANCE="JNR_LOAN_CREDIT" FROMINSTANCETYPE="Joiner" TOFIELD="DTI_RATIO" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+
+  <!-- LKP → EXP_DERIVE -->
+  <CONNECTOR FROMFIELD="OUT_MSA_NAME" FROMINSTANCE="LKP_MSA_PROPERTIES" FROMINSTANCETYPE="Lookup Procedure" TOFIELD="MSA_NAME" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="OUT_CENSUS_REGION" FROMINSTANCE="LKP_MSA_PROPERTIES" FROMINSTANCETYPE="Lookup Procedure" TOFIELD="CENSUS_REGION" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+
+  <!-- SQ_DIM → EXP_DERIVE (SCD2 comparison values) -->
+  <CONNECTOR FROMFIELD="LOAN_STATUS_KEY" FROMINSTANCE="SQ_DIM_LOAN_STATUS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="DIM_LOAN_STATUS_KEY" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="CURRENT_DELINQUENCY_STATUS" FROMINSTANCE="SQ_DIM_LOAN_STATUS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="DIM_DELINQUENCY_STATUS" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="CURRENT_ZERO_BALANCE_CODE" FROMINSTANCE="SQ_DIM_LOAN_STATUS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="DIM_ZERO_BALANCE_CODE" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="EFF_START_PERIOD" FROMINSTANCE="SQ_DIM_LOAN_STATUS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="DIM_EFF_START_PERIOD" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+
+  <!-- EXP_DERIVE → RTR_LOAN_CHANGE -->
+  <CONNECTOR FROMFIELD="LOAN_IDENTIFIER" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="LOAN_IDENTIFIER" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="REPORTING_PERIOD" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="REPORTING_PERIOD" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_UPB" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="ORIGINAL_UPB" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="CURRENT_UPB" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="CURRENT_UPB" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="NOTE_RATE" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="NOTE_RATE" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_LTV" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="ORIGINAL_LTV" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_CLTV" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="ORIGINAL_CLTV" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="BORROWER_FICO" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="BORROWER_FICO" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="DTI_RATIO" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="DTI_RATIO" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_STATUS" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="DELINQUENCY_STATUS" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_BAND" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="DELINQUENCY_BAND" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="LOAN_PURPOSE_DESC" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="LOAN_PURPOSE_DESC" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE_DESC" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="PROPERTY_TYPE_DESC" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="OCCUPANCY_DESC" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="OCCUPANCY_DESC" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="MSA_CODE" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="MSA_CODE" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="MSA_NAME" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="MSA_NAME" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="CENSUS_REGION" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="CENSUS_REGION" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="CREDIT_RISK_TIER" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="CREDIT_RISK_TIER" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="LOAN_CHANGE_TYPE" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="LOAN_CHANGE_TYPE" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="UPB_REDUCTION" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="UPB_REDUCTION" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="UPB_REDUCTION_PCT" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="UPB_REDUCTION_PCT" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="ZERO_BALANCE_CODE" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="ZERO_BALANCE_CODE" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="MODIFICATION_FLAG" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="MODIFICATION_FLAG" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="PROPERTY_STATE" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="PROPERTY_STATE" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="NEW_EFF_START_PERIOD" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="NEW_EFF_START_PERIOD" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="EXPIRE_EFF_END_PERIOD" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="EXPIRE_EFF_END_PERIOD" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+  <CONNECTOR FROMFIELD="EXISTING_LOAN_STATUS_KEY" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="EXISTING_LOAN_STATUS_KEY" TOINSTANCE="RTR_LOAN_CHANGE" TOINSTANCETYPE="Router"/>
+
+  <!-- RTR → AGG_PORTFOLIO (all groups feed aggregate) -->
+  <CONNECTOR FROMFIELD="REPORTING_PERIOD" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="REPORTING_PERIOD" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_BAND" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="DELINQUENCY_BAND" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="CREDIT_RISK_TIER" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="CREDIT_RISK_TIER" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="PROPERTY_STATE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="PROPERTY_STATE" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="CURRENT_UPB" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="CURRENT_UPB" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="NOTE_RATE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="NOTE_RATE" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_LTV" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="ORIGINAL_LTV" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="DTI_RATIO" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="DTI_RATIO" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+  <CONNECTOR FROMFIELD="LOAN_CHANGE_TYPE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="LOAN_CHANGE_TYPE" TOINSTANCE="AGG_PORTFOLIO" TOINSTANCETYPE="Aggregator"/>
+
+  <!-- RTR → FACT_LOAN_DELIVERY (all three groups write fact rows) -->
+  <CONNECTOR FROMFIELD="LOAN_IDENTIFIER" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="LOAN_IDENTIFIER" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="REPORTING_PERIOD" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="REPORTING_PERIOD" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_UPB" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="ORIGINAL_UPB" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="CURRENT_UPB" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="CURRENT_UPB" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="NOTE_RATE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="NOTE_RATE" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_LTV" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="ORIGINAL_LTV" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="ORIGINAL_CLTV" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="ORIGINAL_CLTV" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="BORROWER_FICO" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="BORROWER_FICO" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="DTI_RATIO" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="DTI_RATIO" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_STATUS" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="DELINQUENCY_STATUS" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_BAND" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="DELINQUENCY_BAND" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="LOAN_PURPOSE_DESC" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="LOAN_PURPOSE_DESC" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE_DESC" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="PROPERTY_TYPE_DESC" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="OCCUPANCY_DESC" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="OCCUPANCY_DESC" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="MSA_CODE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="MSA_CODE" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="MSA_NAME" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="MSA_NAME" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="CENSUS_REGION" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="CENSUS_REGION" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="CREDIT_RISK_TIER" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="CREDIT_RISK_TIER" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="LOAN_CHANGE_TYPE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="LOAN_CHANGE_TYPE" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="UPB_REDUCTION" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="UPB_REDUCTION" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="UPB_REDUCTION_PCT" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="UPB_REDUCTION_PCT" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="ZERO_BALANCE_CODE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="ZERO_BALANCE_CODE" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="MODIFICATION_FLAG" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="MODIFICATION_FLAG" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="PROPERTY_STATE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="PROPERTY_STATE" TOINSTANCE="FACT_LOAN_DELIVERY" TOINSTANCETYPE="Target Definition"/>
+
+  <!-- RTR(NEW_LOAN + STATUS_CHANGED) → DIM_LOAN_STATUS_HIST (new/insert rows) -->
+  <CONNECTOR FROMFIELD="LOAN_IDENTIFIER" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="LOAN_IDENTIFIER" TOINSTANCE="DIM_LOAN_STATUS_HIST" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_STATUS" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="DELINQUENCY_STATUS" TOINSTANCE="DIM_LOAN_STATUS_HIST" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="ZERO_BALANCE_CODE" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="ZERO_BALANCE_CODE" TOINSTANCE="DIM_LOAN_STATUS_HIST" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="NEW_EFF_START_PERIOD" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="EFF_START_PERIOD" TOINSTANCE="DIM_LOAN_STATUS_HIST" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="EXISTING_LOAN_STATUS_KEY" FROMINSTANCE="RTR_LOAN_CHANGE" FROMINSTANCETYPE="Router" TOFIELD="LOAN_STATUS_KEY" TOINSTANCE="DIM_LOAN_STATUS_HIST" TOINSTANCETYPE="Target Definition"/>
+
+  <!-- AGG_PORTFOLIO → AGG_PORTFOLIO_SUMMARY -->
+  <CONNECTOR FROMFIELD="REPORTING_PERIOD" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="REPORTING_PERIOD" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="DELINQUENCY_BAND" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="DELINQUENCY_BAND" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="CREDIT_RISK_TIER" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="CREDIT_RISK_TIER" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="PROPERTY_STATE" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="PROPERTY_STATE" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="LOAN_COUNT" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="LOAN_COUNT" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="TOTAL_UPB" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="TOTAL_UPB" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="AVG_NOTE_RATE" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="AVG_NOTE_RATE" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="AVG_LTV" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="AVG_LTV" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="AVG_DTI" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="AVG_DTI" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="NEW_LOAN_COUNT" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="NEW_LOAN_COUNT" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="STATUS_CHANGED_COUNT" FROMINSTANCE="AGG_PORTFOLIO" FROMINSTANCETYPE="Aggregator" TOFIELD="STATUS_CHANGED_COUNT" TOINSTANCE="AGG_PORTFOLIO_SUMMARY" TOINSTANCETYPE="Target Definition"/>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       INSTANCE PLACEMENTS (visual layout)
+  ═══════════════════════════════════════════════════════════ -->
+  <INSTANCE DESCRIPTION="FNMA monthly delivery flat file reader"
+            NAME="SQ_FNMA_DELIVERY"
+            REUSABLE="NO"
+            TRANSFORMATION="SQ_FNMA_DELIVERY"
+            TYPE="Source Qualifier"
+            X="80" Y="160"/>
+  <INSTANCE DESCRIPTION="Credit bureau scores flat file reader"
+            NAME="SQ_CREDIT_SCORES"
+            REUSABLE="NO"
+            TRANSFORMATION="SQ_CREDIT_SCORES"
+            TYPE="Source Qualifier"
+            X="80" Y="340"/>
+  <INSTANCE DESCRIPTION="Current loan status dimension reader"
+            NAME="SQ_DIM_LOAN_STATUS"
+            REUSABLE="NO"
+            TRANSFORMATION="SQ_DIM_LOAN_STATUS"
+            TYPE="Source Qualifier"
+            X="80" Y="520"/>
+  <INSTANCE DESCRIPTION="Left outer join delivery to credit scores"
+            NAME="JNR_LOAN_CREDIT"
+            REUSABLE="NO"
+            TRANSFORMATION="JNR_LOAN_CREDIT"
+            TYPE="Joiner"
+            X="340" Y="240"/>
+  <INSTANCE DESCRIPTION="Lookup MSA metro properties"
+            NAME="LKP_MSA_PROPERTIES"
+            REUSABLE="YES"
+            TRANSFORMATION="LKP_MSA_PROPERTIES"
+            TYPE="Lookup Procedure"
+            X="560" Y="100"/>
+  <INSTANCE DESCRIPTION="Derive all business fields + SCD2 change type"
+            NAME="EXP_DERIVE"
+            REUSABLE="NO"
+            TRANSFORMATION="EXP_DERIVE"
+            TYPE="Expression"
+            X="680" Y="300"/>
+  <INSTANCE DESCRIPTION="Route by NEW_LOAN / STATUS_CHANGED / UNCHANGED"
+            NAME="RTR_LOAN_CHANGE"
+            REUSABLE="NO"
+            TRANSFORMATION="RTR_LOAN_CHANGE"
+            TYPE="Router"
+            X="880" Y="300"/>
+  <INSTANCE DESCRIPTION="Aggregate portfolio metrics by period/band/tier/state"
+            NAME="AGG_PORTFOLIO"
+            REUSABLE="NO"
+            TRANSFORMATION="AGG_PORTFOLIO"
+            TYPE="Aggregator"
+            X="1060" Y="140"/>
+  <INSTANCE DESCRIPTION="Loan delivery fact target"
+            NAME="FACT_LOAN_DELIVERY"
+            REUSABLE="NO"
+            TRANSFORMATION="FACT_LOAN_DELIVERY"
+            TYPE="Target Definition"
+            X="1220" Y="300"/>
+  <INSTANCE DESCRIPTION="SCD2 loan status history target"
+            NAME="DIM_LOAN_STATUS_HIST"
+            REUSABLE="NO"
+            TRANSFORMATION="DIM_LOAN_STATUS_HIST"
+            TYPE="Target Definition"
+            X="1220" Y="460"/>
+  <INSTANCE DESCRIPTION="Portfolio summary aggregate target"
+            NAME="AGG_PORTFOLIO_SUMMARY"
+            REUSABLE="NO"
+            TRANSFORMATION="AGG_PORTFOLIO_SUMMARY"
+            TYPE="Target Definition"
+            X="1220" Y="140"/>
+
+</MAPPING>
+</FOLDER>
+</REPOSITORY>
+</POWERMART>

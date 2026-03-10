@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE POWERMART SYSTEM "powrmart.dtd">
+<!--
+  Mapping  : m_APPRAISAL_RANK_DEDUP
+  Purpose  : Ingest CoreLogic property appraisal CSV extract — which may contain
+             multiple appraisals per property — and deduplicate to the single most
+             recent appraisal per property. A Sorter orders by PROPERTY_ID + APPRAISAL_DATE
+             descending; a Rank transformation keeps only RANKINDEX=1 (the most recent).
+             Derived fields include APPRAISED_VALUE_BAND, MARKET_CONDITION, and whether
+             the appraisal falls within FNMA/FHLMC conforming limits.
+  Complexity: MEDIUM  →  dbt target
+  Sources  :
+    1. CORELOGIC_APPRAISALS.csv  — CoreLogic automated appraisal extract,
+       comma-delimited with header row. May have 1-N appraisals per PROPERTY_ID.
+    2. REF_COUNTY_LIMITS (Oracle) — FHFA conforming loan limits by county/state
+       (lookup only — one row per county per year).
+  Transformations:
+    SQ_APPRAISALS → SRT_BY_PROPERTY_DATE → RNK_LATEST_PER_PROPERTY →
+      LKP_COUNTY_LIMITS → EXP_DERIVE → TGT_DIM_PROPERTY_APPRAISAL
+  Key pattern — SORTER + RANK:
+    Sorter sorts input ascending by PROPERTY_ID, then descending by APPRAISAL_DATE
+    so the most recent appraisal for each property is the first row seen by the Rank.
+    Rank groups by PROPERTY_ID and keeps RANKINDEX = 1 (top-ranked row per group).
+    This is the classic Informatica deduplication pattern — equivalent to
+    ROW_NUMBER() OVER (PARTITION BY PROPERTY_ID ORDER BY APPRAISAL_DATE DESC) = 1.
+  Target   : DIM_PROPERTY_APPRAISAL (Snowflake)
+-->
+<POWERMART CREATION_DATE="02/15/2026 12:00:00" REPOSITORY_VERSION="186.94">
+<REPOSITORY NAME="MORTGAGE_DW" VERSION="186.94" CODEPAGE="UTF-8" DATABASETYPE="Oracle">
+
+<FOLDER NAME="APPRAISAL" GROUP="" DESCRIPTION="CoreLogic appraisal deduplication — Rank pattern" PERMISSIONS="rwx---r--" SHARED="SHARED">
+
+<!-- ═══════════════════════════════════════════════════════════
+     SOURCE DEFINITIONS
+═══════════════════════════════════════════════════════════ -->
+
+<SOURCE BUSINESSNAME="CoreLogic Property Appraisal Extract"
+        DATABASETYPE="FLAT FILE"
+        DBDNAME=""
+        DESCRIPTION="CoreLogic automated valuation model (AVM) and desk review appraisal extract. Comma-delimited with header. Multiple rows per PROPERTY_ID possible — the pipeline deduplicates to one row per property using the Rank transformation."
+        NAME="CORELOGIC_APPRAISALS"
+        OBJECTVERSION="1"
+        OWNERNAME=""
+        VERSIONNUMBER="1">
+  <TABLEATTRIBUTE NAME="File Type"           VALUE="Delimited"/>
+  <TABLEATTRIBUTE NAME="Delimiter"           VALUE=","/>
+  <TABLEATTRIBUTE NAME="Row Delimiter"       VALUE="LF"/>
+  <TABLEATTRIBUTE NAME="Quote Character"     VALUE="Double Quote"/>
+  <TABLEATTRIBUTE NAME="Skip Rows"           VALUE="1"/>
+  <TABLEATTRIBUTE NAME="Import Column Names" VALUE="YES"/>
+  <TABLEATTRIBUTE NAME="Code Page"           VALUE="UTF-8"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="CoreLogic unique property identifier (APN-based)"        FIELDNUMBER="1"  FIELDPROPERTY="0" LENGTH="20" NAME="PROPERTY_ID"           NULLABLE="NOTNULL" PRECISION="20" SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="Assessor parcel number"                                   FIELDNUMBER="2"  FIELDPROPERTY="0" LENGTH="20" NAME="APN"                    NULLABLE="NULLABLE" PRECISION="20" SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="Street address"                                           FIELDNUMBER="3"  FIELDPROPERTY="0" LENGTH="100" NAME="STREET_ADDRESS"          NULLABLE="NULLABLE" PRECISION="100" SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="City name"                                                FIELDNUMBER="4"  FIELDPROPERTY="0" LENGTH="50" NAME="CITY"                    NULLABLE="NULLABLE" PRECISION="50" SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="2-letter state code"                                      FIELDNUMBER="5"  FIELDPROPERTY="0" LENGTH="2"  NAME="STATE_CODE"              NULLABLE="NOTNULL" PRECISION="2"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="5-digit ZIP code"                                         FIELDNUMBER="6"  FIELDPROPERTY="0" LENGTH="5"  NAME="ZIP_CODE"                NULLABLE="NULLABLE" PRECISION="5"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="FIPS county code (5-digit)"                               FIELDNUMBER="7"  FIELDPROPERTY="0" LENGTH="5"  NAME="COUNTY_FIPS"             NULLABLE="NULLABLE" PRECISION="5"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="MSA/CBSA code"                                            FIELDNUMBER="8"  FIELDPROPERTY="0" LENGTH="5"  NAME="MSA_CODE"                NULLABLE="NULLABLE" PRECISION="5"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="decimal" DESCRIPTION="Appraised value in USD"                                   FIELDNUMBER="9"  FIELDPROPERTY="0" LENGTH="12" NAME="APPRAISED_VALUE"          NULLABLE="NOTNULL" PRECISION="12" SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="decimal" DESCRIPTION="Prior appraisal value (for trend calculation)"            FIELDNUMBER="10" FIELDPROPERTY="0" LENGTH="12" NAME="PRIOR_APPRAISED_VALUE"    NULLABLE="NULLABLE" PRECISION="12" SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="Appraisal date YYYYMMDD"                                  FIELDNUMBER="11" FIELDPROPERTY="0" LENGTH="8"  NAME="APPRAISAL_DATE"          NULLABLE="NOTNULL" PRECISION="8"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="Appraisal method: AVM=Automated, DESK=Desk Review, FIELD=Full Field Review" FIELDNUMBER="12" FIELDPROPERTY="0" LENGTH="5"  NAME="APPRAISAL_METHOD"        NULLABLE="NOTNULL" PRECISION="5"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="Property type: SFR=Single Family, CONDO, MFR=Multi-Family, LAND" FIELDNUMBER="13" FIELDPROPERTY="0" LENGTH="5"  NAME="PROPERTY_TYPE"           NULLABLE="NOTNULL" PRECISION="5"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="integer" DESCRIPTION="Gross living area in square feet"                         FIELDNUMBER="14" FIELDPROPERTY="0" LENGTH="6"  NAME="GROSS_LIVING_AREA_SQFT"  NULLABLE="NULLABLE" PRECISION="6"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="integer" DESCRIPTION="Number of bedrooms"                                       FIELDNUMBER="15" FIELDPROPERTY="0" LENGTH="2"  NAME="BEDROOMS"                NULLABLE="NULLABLE" PRECISION="2"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="decimal" DESCRIPTION="Number of bathrooms (e.g., 2.5)"                          FIELDNUMBER="16" FIELDPROPERTY="0" LENGTH="4"  NAME="BATHROOMS"               NULLABLE="NULLABLE" PRECISION="4"  SCALE="1"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="integer" DESCRIPTION="Year property was built"                                  FIELDNUMBER="17" FIELDPROPERTY="0" LENGTH="4"  NAME="YEAR_BUILT"              NULLABLE="NULLABLE" PRECISION="4"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="decimal" DESCRIPTION="AVM confidence score 0.0-1.0 (null for non-AVM)"          FIELDNUMBER="18" FIELDPROPERTY="0" LENGTH="4"  NAME="AVM_CONFIDENCE_SCORE"    NULLABLE="NULLABLE" PRECISION="4"  SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="Appraiser or AVM model license/identifier"                FIELDNUMBER="19" FIELDPROPERTY="0" LENGTH="20" NAME="APPRAISER_ID"             NULLABLE="NULLABLE" PRECISION="20" SCALE="0"/>
+</SOURCE>
+
+<!-- Source 2: County conforming loan limits (lookup) -->
+<SOURCE BUSINESSNAME="FHFA County Conforming Loan Limits"
+        DATABASETYPE="Oracle"
+        DBDNAME="MORTGAGE_DW"
+        DESCRIPTION="FHFA annual conforming and high-balance loan limit table by FIPS county code and year. Used to classify appraised values relative to local market limits."
+        NAME="REF_COUNTY_LIMITS"
+        OBJECTVERSION="1"
+        OWNERNAME="DW"
+        VERSIONNUMBER="1">
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="5-digit FIPS county code" FIELDNUMBER="1" FIELDPROPERTY="0" KEYTYPE="PRIMARY KEY" LENGTH="5"  NAME="COUNTY_FIPS"        NULLABLE="NOTNULL" PRECISION="5"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="integer" DESCRIPTION="Limit effective year"      FIELDNUMBER="2" FIELDPROPERTY="0" KEYTYPE="PRIMARY KEY" LENGTH="4"  NAME="LIMIT_YEAR"         NULLABLE="NOTNULL" PRECISION="4"  SCALE="0"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="decimal" DESCRIPTION="Standard 1-unit conforming loan limit" FIELDNUMBER="3" FIELDPROPERTY="0" KEYTYPE="NOT A KEY" LENGTH="10" NAME="CONFORMING_LIMIT"   NULLABLE="NOTNULL" PRECISION="10" SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="decimal" DESCRIPTION="High-balance loan limit (higher cost areas)" FIELDNUMBER="4" FIELDPROPERTY="0" KEYTYPE="NOT A KEY" LENGTH="10" NAME="HIGH_BALANCE_LIMIT" NULLABLE="NOTNULL" PRECISION="10" SCALE="2"/>
+  <SOURCEFIELD BUSINESSNAME="" DATATYPE="string"  DESCRIPTION="County name"                              FIELDNUMBER="5" FIELDPROPERTY="0" KEYTYPE="NOT A KEY" LENGTH="50" NAME="COUNTY_NAME"       NULLABLE="NOTNULL" PRECISION="50" SCALE="0"/>
+</SOURCE>
+
+<!-- ═══════════════════════════════════════════════════════════
+     TARGET DEFINITION
+═══════════════════════════════════════════════════════════ -->
+
+<TARGET BUSINESSNAME="Property Appraisal Dimension"
+        CONSTRAINT=""
+        DATABASETYPE="Snowflake"
+        DESCRIPTION="One row per property containing the most recent appraisal. Includes derived value bands, market condition, conforming limit classification, and value trend. Truncate-and-reload on each run."
+        NAME="DIM_PROPERTY_APPRAISAL"
+        OBJECTVERSION="1"
+        TABLEOPTIONS=""
+        VERSIONNUMBER="1">
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="integer"  DESCRIPTION="Surrogate key"                                FIELDNUMBER="1"  KEYTYPE="PRIMARY KEY" LENGTH="10" NAME="APPRAISAL_KEY"        NULLABLE="NOTNULL" PRECISION="10" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="2"  KEYTYPE="NOT A KEY" LENGTH="20" NAME="PROPERTY_ID"          NULLABLE="NOTNULL" PRECISION="20" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="3"  KEYTYPE="NOT A KEY" LENGTH="20" NAME="APN"                   NULLABLE="NULLABLE" PRECISION="20" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="4"  KEYTYPE="NOT A KEY" LENGTH="100" NAME="STREET_ADDRESS"        NULLABLE="NULLABLE" PRECISION="100" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="5"  KEYTYPE="NOT A KEY" LENGTH="50" NAME="CITY"                  NULLABLE="NULLABLE" PRECISION="50" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="6"  KEYTYPE="NOT A KEY" LENGTH="2"  NAME="STATE_CODE"            NULLABLE="NOTNULL" PRECISION="2"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="7"  KEYTYPE="NOT A KEY" LENGTH="5"  NAME="ZIP_CODE"              NULLABLE="NULLABLE" PRECISION="5"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="8"  KEYTYPE="NOT A KEY" LENGTH="5"  NAME="COUNTY_FIPS"           NULLABLE="NULLABLE" PRECISION="5"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="9"  KEYTYPE="NOT A KEY" LENGTH="50" NAME="COUNTY_NAME"           NULLABLE="NULLABLE" PRECISION="50" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="10" KEYTYPE="NOT A KEY" LENGTH="5"  NAME="MSA_CODE"              NULLABLE="NULLABLE" PRECISION="5"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="decimal"  FIELDNUMBER="11" KEYTYPE="NOT A KEY" LENGTH="12" NAME="APPRAISED_VALUE"        NULLABLE="NOTNULL" PRECISION="12" SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="12" KEYTYPE="NOT A KEY" LENGTH="8"  NAME="APPRAISAL_DATE"        NULLABLE="NOTNULL" PRECISION="8"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="13" KEYTYPE="NOT A KEY" LENGTH="5"  NAME="APPRAISAL_METHOD"      NULLABLE="NOTNULL" PRECISION="5"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   FIELDNUMBER="14" KEYTYPE="NOT A KEY" LENGTH="5"  NAME="PROPERTY_TYPE"         NULLABLE="NOTNULL" PRECISION="5"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="integer"  FIELDNUMBER="15" KEYTYPE="NOT A KEY" LENGTH="6"  NAME="GROSS_LIVING_AREA_SQFT" NULLABLE="NULLABLE" PRECISION="6" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="integer"  FIELDNUMBER="16" KEYTYPE="NOT A KEY" LENGTH="4"  NAME="YEAR_BUILT"            NULLABLE="NULLABLE" PRECISION="4"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="decimal"  FIELDNUMBER="17" KEYTYPE="NOT A KEY" LENGTH="4"  NAME="AVM_CONFIDENCE_SCORE"  NULLABLE="NULLABLE" PRECISION="4"  SCALE="2"/>
+  <!-- Derived fields -->
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="decimal"  DESCRIPTION="Price per sq ft (null if SQFT not available)"    FIELDNUMBER="18" KEYTYPE="NOT A KEY" LENGTH="8"  NAME="PRICE_PER_SQFT"      NULLABLE="NULLABLE" PRECISION="8"  SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="decimal"  DESCRIPTION="Value change since prior appraisal (null if no prior)" FIELDNUMBER="19" KEYTYPE="NOT A KEY" LENGTH="12" NAME="VALUE_CHANGE"    NULLABLE="NULLABLE" PRECISION="12" SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="decimal"  DESCRIPTION="% change since prior appraisal"                  FIELDNUMBER="20" KEYTYPE="NOT A KEY" LENGTH="7"  NAME="VALUE_CHANGE_PCT"    NULLABLE="NULLABLE" PRECISION="7"  SCALE="4"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   DESCRIPTION="DECLINING / STABLE / APPRECIATING based on VALUE_CHANGE_PCT bands" FIELDNUMBER="21" KEYTYPE="NOT A KEY" LENGTH="20" NAME="MARKET_CONDITION"   NULLABLE="NOTNULL" PRECISION="20" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   DESCRIPTION="BELOW_CONFORMING / CONFORMING / HIGH_BALANCE / JUMBO relative to FHFA county limits" FIELDNUMBER="22" KEYTYPE="NOT A KEY" LENGTH="20" NAME="VALUE_BAND"          NULLABLE="NOTNULL" PRECISION="20" SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="string"   DESCRIPTION="Y if appraised value is within the county conforming limit" FIELDNUMBER="23" KEYTYPE="NOT A KEY" LENGTH="1"  NAME="IS_CONFORMING_VALUE"  NULLABLE="NOTNULL" PRECISION="1"  SCALE="0"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="decimal"  DESCRIPTION="FHFA standard conforming limit for this county (from lookup)" FIELDNUMBER="24" KEYTYPE="NOT A KEY" LENGTH="10" NAME="CONFORMING_LIMIT"      NULLABLE="NULLABLE" PRECISION="10" SCALE="2"/>
+  <TARGETFIELD BUSINESSNAME="" DATATYPE="timestamp" FIELDNUMBER="25" KEYTYPE="NOT A KEY" LENGTH="29" NAME="LOAD_TIMESTAMP"      NULLABLE="NOTNULL" PRECISION="29" SCALE="9"/>
+</TARGET>
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAPPING
+═══════════════════════════════════════════════════════════ -->
+<MAPPING DESCRIPTION="Reads CoreLogic appraisals CSV (potentially multiple per property). Sorter orders by PROPERTY_ID ASC, APPRAISAL_DATE DESC. Rank keeps only the latest appraisal per property (RANKINDEX=1). Lookup retrieves FHFA county loan limits. Expression derives value bands, market condition, price/sqft, and conforming classification."
+         ISVALID="YES"
+         NAME="m_APPRAISAL_RANK_DEDUP"
+         OBJECTVERSION="1"
+         VERSIONNUMBER="1">
+
+  <!-- ── Source Qualifier: CoreLogic file ── -->
+  <TRANSFORMATION DESCRIPTION="Read CoreLogic appraisal flat file. Filter: PROPERTY_ID not null, APPRAISED_VALUE &gt; 0, APPRAISAL_DATE not null."
+                  NAME="SQ_APPRAISALS"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Source Qualifier"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="PROPERTY_ID"           PORTTYPE="INPUT/OUTPUT" PRECISION="20" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="APN"                    PORTTYPE="INPUT/OUTPUT" PRECISION="20" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="100" NAME="STREET_ADDRESS"         PORTTYPE="INPUT/OUTPUT" PRECISION="100" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="50" NAME="CITY"                   PORTTYPE="INPUT/OUTPUT" PRECISION="50" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="2"  NAME="STATE_CODE"             PORTTYPE="INPUT/OUTPUT" PRECISION="2"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="ZIP_CODE"               PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="COUNTY_FIPS"            PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="MSA_CODE"               PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="APPRAISED_VALUE"         PORTTYPE="INPUT/OUTPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="PRIOR_APPRAISED_VALUE"   PORTTYPE="INPUT/OUTPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="8"  NAME="APPRAISAL_DATE"         PORTTYPE="INPUT/OUTPUT" PRECISION="8"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="APPRAISAL_METHOD"       PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="PROPERTY_TYPE"          PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="6"  NAME="GROSS_LIVING_AREA_SQFT" PORTTYPE="INPUT/OUTPUT" PRECISION="6"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="2"  NAME="BEDROOMS"               PORTTYPE="INPUT/OUTPUT" PRECISION="2"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="4"  NAME="BATHROOMS"              PORTTYPE="INPUT/OUTPUT" PRECISION="4"  SCALE="1"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="4"  NAME="YEAR_BUILT"             PORTTYPE="INPUT/OUTPUT" PRECISION="4"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="4"  NAME="AVM_CONFIDENCE_SCORE"   PORTTYPE="INPUT/OUTPUT" PRECISION="4"  SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="APPRAISER_ID"           PORTTYPE="INPUT/OUTPUT" PRECISION="20" SCALE="0"/>
+    <TABLEATTRIBUTE NAME="Filter" VALUE="PROPERTY_ID IS NOT NULL AND APPRAISED_VALUE &gt; 0 AND APPRAISAL_DATE IS NOT NULL"/>
+  </TRANSFORMATION>
+
+  <!-- ── Sorter: sort by PROPERTY_ID ASC, APPRAISAL_DATE DESC ── -->
+  <TRANSFORMATION DESCRIPTION="Sort all appraisal rows by PROPERTY_ID ascending (to group same property records together) then by APPRAISAL_DATE descending (most recent first within each property group). This ordering is required by the downstream Rank transformation so that RANKINDEX=1 always represents the most recent appraisal."
+                  NAME="SRT_BY_PROPERTY_DATE"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Sorter"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="PROPERTY_ID"           PORTTYPE="INPUT/OUTPUT" PRECISION="20" SCALE="0" SORTDIRECTION="ASCENDING"  SORTKEYPOSITION="1"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="8"  NAME="APPRAISAL_DATE"        PORTTYPE="INPUT/OUTPUT" PRECISION="8"  SCALE="0" SORTDIRECTION="DESCENDING" SORTKEYPOSITION="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="APN"                    PORTTYPE="INPUT/OUTPUT" PRECISION="20" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="100" NAME="STREET_ADDRESS"         PORTTYPE="INPUT/OUTPUT" PRECISION="100" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="50" NAME="CITY"                   PORTTYPE="INPUT/OUTPUT" PRECISION="50" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="2"  NAME="STATE_CODE"             PORTTYPE="INPUT/OUTPUT" PRECISION="2"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="ZIP_CODE"               PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="COUNTY_FIPS"            PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="MSA_CODE"               PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="APPRAISED_VALUE"         PORTTYPE="INPUT/OUTPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="PRIOR_APPRAISED_VALUE"   PORTTYPE="INPUT/OUTPUT" PRECISION="12" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="APPRAISAL_METHOD"       PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="PROPERTY_TYPE"          PORTTYPE="INPUT/OUTPUT" PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="6"  NAME="GROSS_LIVING_AREA_SQFT" PORTTYPE="INPUT/OUTPUT" PRECISION="6"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="2"  NAME="BEDROOMS"               PORTTYPE="INPUT/OUTPUT" PRECISION="2"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="4"  NAME="BATHROOMS"              PORTTYPE="INPUT/OUTPUT" PRECISION="4"  SCALE="1"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="4"  NAME="YEAR_BUILT"             PORTTYPE="INPUT/OUTPUT" PRECISION="4"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="4"  NAME="AVM_CONFIDENCE_SCORE"   PORTTYPE="INPUT/OUTPUT" PRECISION="4"  SCALE="2"/>
+    <TABLEATTRIBUTE NAME="Distinct" VALUE="NO"/>
+    <TABLEATTRIBUTE NAME="Case Sensitive" VALUE="YES"/>
+  </TRANSFORMATION>
+
+  <!-- ── Rank: keep only the most recent appraisal per property ── -->
+  <TRANSFORMATION DESCRIPTION="Rank transformation partitions rows by PROPERTY_ID and assigns RANKINDEX 1..N. Because the Sorter placed the most recent APPRAISAL_DATE first, RANKINDEX=1 is the most recent appraisal. The Rank filter port (RANKINDEX = 1) passes only the top-ranked row for each property, discarding all older duplicates."
+                  NAME="RNK_LATEST_PER_PROPERTY"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Rank"
+                  VERSIONNUMBER="1">
+    <!-- Rank key port: the field that defines ranking order within each partition.
+         Since data is pre-sorted descending by APPRAISAL_DATE, we rank by APPRAISAL_DATE
+         in descending order so the most recent gets RANKINDEX=1. -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    LENGTH="8"
+                    NAME="APPRAISAL_DATE"
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="8"
+                    SCALE="0"
+                    RANKDIRECTION="TOP"
+                    RANKFIELD="YES"
+                    DESCRIPTION="Rank key: descending by date so RANKINDEX=1 = most recent appraisal."/>
+    <!-- Partition by PROPERTY_ID — one rank group per property -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    LENGTH="20"
+                    NAME="PROPERTY_ID"
+                    PORTTYPE="INPUT/OUTPUT"
+                    PRECISION="20"
+                    SCALE="0"
+                    GROUPBYFIELD="YES"
+                    DESCRIPTION="Partition (group-by) field: one independent ranking per property."/>
+    <!-- RANKINDEX port — system-generated, outputs 1 for the best row in each partition -->
+    <TRANSFORMFIELD DATATYPE="integer"
+                    LENGTH="10"
+                    NAME="RANKINDEX"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="10"
+                    SCALE="0"
+                    DESCRIPTION="System-generated rank index. 1 = most recent appraisal for this PROPERTY_ID. Downstream filter passes RANKINDEX=1 only."/>
+    <!-- Remaining data ports passed through -->
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="APN"                    PORTTYPE="INPUT/OUTPUT" PRECISION="20"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="100" NAME="STREET_ADDRESS"         PORTTYPE="INPUT/OUTPUT" PRECISION="100" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="50" NAME="CITY"                   PORTTYPE="INPUT/OUTPUT" PRECISION="50"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="2"  NAME="STATE_CODE"             PORTTYPE="INPUT/OUTPUT" PRECISION="2"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="ZIP_CODE"               PORTTYPE="INPUT/OUTPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="COUNTY_FIPS"            PORTTYPE="INPUT/OUTPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="MSA_CODE"               PORTTYPE="INPUT/OUTPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="APPRAISED_VALUE"         PORTTYPE="INPUT/OUTPUT" PRECISION="12"  SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="PRIOR_APPRAISED_VALUE"   PORTTYPE="INPUT/OUTPUT" PRECISION="12"  SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="APPRAISAL_METHOD"       PORTTYPE="INPUT/OUTPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="PROPERTY_TYPE"          PORTTYPE="INPUT/OUTPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="6"  NAME="GROSS_LIVING_AREA_SQFT" PORTTYPE="INPUT/OUTPUT" PRECISION="6"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="4"  NAME="YEAR_BUILT"             PORTTYPE="INPUT/OUTPUT" PRECISION="4"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="4"  NAME="AVM_CONFIDENCE_SCORE"   PORTTYPE="INPUT/OUTPUT" PRECISION="4"   SCALE="2"/>
+    <TABLEATTRIBUTE NAME="Number Of Ranks" VALUE="1"/>
+    <TABLEATTRIBUTE NAME="Rank" VALUE="TOP"/>
+  </TRANSFORMATION>
+
+  <!-- ── Lookup: FHFA county conforming limits ── -->
+  <TRANSFORMATION DESCRIPTION="Look up FHFA conforming and high-balance loan limits by COUNTY_FIPS and the current year. If no match (rural/unclassified county), return the national baseline limits."
+                  NAME="LKP_COUNTY_LIMITS"
+                  OBJECTVERSION="1"
+                  REUSABLE="YES"
+                  TYPE="Lookup"
+                  VERSIONNUMBER="1">
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="IN_COUNTY_FIPS"       PORTTYPE="INPUT"  PRECISION="5"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="4"  NAME="IN_LIMIT_YEAR"        PORTTYPE="INPUT"  PRECISION="4"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="10" NAME="OUT_CONFORMING_LIMIT"  PORTTYPE="OUTPUT" PRECISION="10" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="10" NAME="OUT_HIGH_BALANCE_LIMIT" PORTTYPE="OUTPUT" PRECISION="10" SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="50" NAME="OUT_COUNTY_NAME"       PORTTYPE="OUTPUT" PRECISION="50" SCALE="0"/>
+    <TABLEATTRIBUTE NAME="Lookup table name"                VALUE="REF_COUNTY_LIMITS"/>
+    <TABLEATTRIBUTE NAME="Lookup condition"                  VALUE="IN_COUNTY_FIPS = COUNTY_FIPS AND IN_LIMIT_YEAR = LIMIT_YEAR"/>
+    <TABLEATTRIBUTE NAME="Lookup policy on multiple match"  VALUE="Use first value"/>
+    <TABLEATTRIBUTE NAME="Lookup cache"                      VALUE="Static"/>
+    <TABLEATTRIBUTE NAME="Return rows"                       VALUE="All rows"/>
+  </TRANSFORMATION>
+
+  <!-- ── Expression: derive all output fields ── -->
+  <TRANSFORMATION DESCRIPTION="Post-rank, post-lookup derivations: (1) PRICE_PER_SQFT. (2) VALUE_CHANGE and VALUE_CHANGE_PCT vs prior appraisal. (3) MARKET_CONDITION: DECLINING &lt;-5%, STABLE -5% to +5%, APPRECIATING &gt;5%. (4) VALUE_BAND relative to FHFA county limits: BELOW_CONFORMING / CONFORMING / HIGH_BALANCE / JUMBO. (5) IS_CONFORMING_VALUE flag."
+                  NAME="EXP_DERIVE"
+                  OBJECTVERSION="1"
+                  REUSABLE="NO"
+                  TYPE="Expression"
+                  VERSIONNUMBER="1">
+    <!-- Inputs from Rank -->
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="PROPERTY_ID"            PORTTYPE="INPUT" PRECISION="20"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="20" NAME="APN"                     PORTTYPE="INPUT" PRECISION="20"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="100" NAME="STREET_ADDRESS"          PORTTYPE="INPUT" PRECISION="100" SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="50" NAME="CITY"                    PORTTYPE="INPUT" PRECISION="50"  SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="2"  NAME="STATE_CODE"              PORTTYPE="INPUT" PRECISION="2"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="ZIP_CODE"                PORTTYPE="INPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="COUNTY_FIPS"             PORTTYPE="INPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="MSA_CODE"                PORTTYPE="INPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="APPRAISED_VALUE"          PORTTYPE="INPUT" PRECISION="12"  SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="12" NAME="PRIOR_APPRAISED_VALUE"    PORTTYPE="INPUT" PRECISION="12"  SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="8"  NAME="APPRAISAL_DATE"          PORTTYPE="INPUT" PRECISION="8"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="APPRAISAL_METHOD"        PORTTYPE="INPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="5"  NAME="PROPERTY_TYPE"           PORTTYPE="INPUT" PRECISION="5"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="6"  NAME="GROSS_LIVING_AREA_SQFT"  PORTTYPE="INPUT" PRECISION="6"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="integer" LENGTH="4"  NAME="YEAR_BUILT"              PORTTYPE="INPUT" PRECISION="4"   SCALE="0"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="4"  NAME="AVM_CONFIDENCE_SCORE"    PORTTYPE="INPUT" PRECISION="4"   SCALE="2"/>
+    <!-- Inputs from Lookup -->
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="10" NAME="CONFORMING_LIMIT"         PORTTYPE="INPUT" PRECISION="10"  SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="decimal" LENGTH="10" NAME="HIGH_BALANCE_LIMIT"       PORTTYPE="INPUT" PRECISION="10"  SCALE="2"/>
+    <TRANSFORMFIELD DATATYPE="string"  LENGTH="50" NAME="COUNTY_NAME"             PORTTYPE="INPUT" PRECISION="50"  SCALE="0"/>
+
+    <!-- Price per square foot -->
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Appraised value per square foot. Null when GROSS_LIVING_AREA_SQFT is null or zero."
+                    EXPRESSION="IIF(ISNULL(GROSS_LIVING_AREA_SQFT) OR GROSS_LIVING_AREA_SQFT = 0, NULL, APPRAISED_VALUE / GROSS_LIVING_AREA_SQFT)"
+                    LENGTH="8"
+                    NAME="PRICE_PER_SQFT"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="8"
+                    SCALE="2"/>
+
+    <!-- Value change since prior appraisal -->
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Absolute value change vs prior appraisal. Null when no prior appraisal on record."
+                    EXPRESSION="IIF(ISNULL(PRIOR_APPRAISED_VALUE) OR PRIOR_APPRAISED_VALUE = 0, NULL, APPRAISED_VALUE - PRIOR_APPRAISED_VALUE)"
+                    LENGTH="12"
+                    NAME="VALUE_CHANGE"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="12"
+                    SCALE="2"/>
+
+    <!-- Value change percent -->
+    <TRANSFORMFIELD DATATYPE="decimal"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Percentage change vs prior appraisal. Null when no prior appraisal."
+                    EXPRESSION="IIF(ISNULL(PRIOR_APPRAISED_VALUE) OR PRIOR_APPRAISED_VALUE = 0, NULL, (APPRAISED_VALUE - PRIOR_APPRAISED_VALUE) / PRIOR_APPRAISED_VALUE)"
+                    LENGTH="7"
+                    NAME="VALUE_CHANGE_PCT"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="7"
+                    SCALE="4"/>
+
+    <!-- Market condition based on value change % bands -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Market condition classification. DECLINING: &lt;-5% change. STABLE: -5% to +5%. APPRECIATING: &gt;+5%. NO_PRIOR: first appraisal on record."
+                    EXPRESSION="IIF(ISNULL(PRIOR_APPRAISED_VALUE) OR PRIOR_APPRAISED_VALUE = 0, 'NO_PRIOR', IIF((APPRAISED_VALUE - PRIOR_APPRAISED_VALUE) / PRIOR_APPRAISED_VALUE &lt; -0.05, 'DECLINING', IIF((APPRAISED_VALUE - PRIOR_APPRAISED_VALUE) / PRIOR_APPRAISED_VALUE &gt; 0.05, 'APPRECIATING', 'STABLE')))"
+                    LENGTH="20"
+                    NAME="MARKET_CONDITION"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="20"
+                    SCALE="0"/>
+
+    <!-- Value band vs FHFA conforming limits -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Classify appraised value relative to FHFA county limits. BELOW_CONFORMING: below 80% of conforming limit. CONFORMING: up to the conforming limit. HIGH_BALANCE: between conforming and high-balance limit. JUMBO: above high-balance limit. UNCLASSIFIED: no county limit data available."
+                    EXPRESSION="IIF(ISNULL(CONFORMING_LIMIT), 'UNCLASSIFIED', IIF(APPRAISED_VALUE &lt;= CONFORMING_LIMIT * 0.80, 'BELOW_CONFORMING', IIF(APPRAISED_VALUE &lt;= CONFORMING_LIMIT, 'CONFORMING', IIF(APPRAISED_VALUE &lt;= HIGH_BALANCE_LIMIT, 'HIGH_BALANCE', 'JUMBO'))))"
+                    LENGTH="20"
+                    NAME="VALUE_BAND"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="20"
+                    SCALE="0"/>
+
+    <!-- Is conforming value flag -->
+    <TRANSFORMFIELD DATATYPE="string"
+                    DEFAULTVALUE=""
+                    DESCRIPTION="Y if appraised value is at or below the FHFA standard conforming limit for the county. N otherwise. Used for FNMA eligibility pre-screening."
+                    EXPRESSION="IIF(ISNULL(CONFORMING_LIMIT), 'U', IIF(APPRAISED_VALUE &lt;= CONFORMING_LIMIT, 'Y', 'N'))"
+                    LENGTH="1"
+                    NAME="IS_CONFORMING_VALUE"
+                    PORTTYPE="OUTPUT"
+                    PRECISION="1"
+                    SCALE="0"/>
+  </TRANSFORMATION>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       CONNECTORS
+  ═══════════════════════════════════════════════════════════ -->
+
+  <!-- SQ → SRT -->
+  <CONNECTOR FROMFIELD="PROPERTY_ID"           FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="PROPERTY_ID"           TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="APN"                    FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="APN"                    TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="STREET_ADDRESS"         FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="STREET_ADDRESS"         TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="CITY"                   FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="CITY"                   TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="STATE_CODE"             FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="STATE_CODE"             TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="ZIP_CODE"               FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="ZIP_CODE"               TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="COUNTY_FIPS"            FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="COUNTY_FIPS"            TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="MSA_CODE"               FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="MSA_CODE"               TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="APPRAISED_VALUE"         FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="APPRAISED_VALUE"         TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="PRIOR_APPRAISED_VALUE"   FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="PRIOR_APPRAISED_VALUE"   TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_DATE"         FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="APPRAISAL_DATE"         TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_METHOD"       FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="APPRAISAL_METHOD"       TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE"          FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="PROPERTY_TYPE"          TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="GROSS_LIVING_AREA_SQFT" FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="GROSS_LIVING_AREA_SQFT" TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="YEAR_BUILT"             FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="YEAR_BUILT"             TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+  <CONNECTOR FROMFIELD="AVM_CONFIDENCE_SCORE"   FROMINSTANCE="SQ_APPRAISALS" FROMINSTANCETYPE="Source Qualifier" TOFIELD="AVM_CONFIDENCE_SCORE"   TOINSTANCE="SRT_BY_PROPERTY_DATE" TOINSTANCETYPE="Sorter"/>
+
+  <!-- SRT → RNK -->
+  <CONNECTOR FROMFIELD="PROPERTY_ID"           FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="PROPERTY_ID"           TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="APN"                    FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="APN"                    TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="STREET_ADDRESS"         FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="STREET_ADDRESS"         TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="CITY"                   FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="CITY"                   TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="STATE_CODE"             FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="STATE_CODE"             TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="ZIP_CODE"               FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="ZIP_CODE"               TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="COUNTY_FIPS"            FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="COUNTY_FIPS"            TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="MSA_CODE"               FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="MSA_CODE"               TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="APPRAISED_VALUE"         FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="APPRAISED_VALUE"         TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="PRIOR_APPRAISED_VALUE"   FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="PRIOR_APPRAISED_VALUE"   TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_DATE"         FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="APPRAISAL_DATE"         TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_METHOD"       FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="APPRAISAL_METHOD"       TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE"          FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="PROPERTY_TYPE"          TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="GROSS_LIVING_AREA_SQFT" FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="GROSS_LIVING_AREA_SQFT" TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="YEAR_BUILT"             FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="YEAR_BUILT"             TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+  <CONNECTOR FROMFIELD="AVM_CONFIDENCE_SCORE"   FROMINSTANCE="SRT_BY_PROPERTY_DATE" FROMINSTANCETYPE="Sorter" TOFIELD="AVM_CONFIDENCE_SCORE"   TOINSTANCE="RNK_LATEST_PER_PROPERTY" TOINSTANCETYPE="Rank"/>
+
+  <!-- RNK → LKP -->
+  <CONNECTOR FROMFIELD="COUNTY_FIPS" FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="IN_COUNTY_FIPS" TOINSTANCE="LKP_COUNTY_LIMITS" TOINSTANCETYPE="Lookup"/>
+
+  <!-- RNK → EXP (data ports) -->
+  <CONNECTOR FROMFIELD="PROPERTY_ID"           FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="PROPERTY_ID"           TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="APN"                    FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="APN"                    TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="STREET_ADDRESS"         FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="STREET_ADDRESS"         TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="CITY"                   FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="CITY"                   TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="STATE_CODE"             FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="STATE_CODE"             TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="ZIP_CODE"               FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="ZIP_CODE"               TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="COUNTY_FIPS"            FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="COUNTY_FIPS"            TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="MSA_CODE"               FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="MSA_CODE"               TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="APPRAISED_VALUE"         FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="APPRAISED_VALUE"         TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="PRIOR_APPRAISED_VALUE"   FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="PRIOR_APPRAISED_VALUE"   TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_DATE"         FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="APPRAISAL_DATE"         TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_METHOD"       FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="APPRAISAL_METHOD"       TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE"          FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="PROPERTY_TYPE"          TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="GROSS_LIVING_AREA_SQFT" FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="GROSS_LIVING_AREA_SQFT" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="YEAR_BUILT"             FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="YEAR_BUILT"             TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="AVM_CONFIDENCE_SCORE"   FROMINSTANCE="RNK_LATEST_PER_PROPERTY" FROMINSTANCETYPE="Rank" TOFIELD="AVM_CONFIDENCE_SCORE"   TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+
+  <!-- LKP → EXP -->
+  <CONNECTOR FROMFIELD="OUT_CONFORMING_LIMIT"   FROMINSTANCE="LKP_COUNTY_LIMITS" FROMINSTANCETYPE="Lookup" TOFIELD="CONFORMING_LIMIT"   TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="OUT_HIGH_BALANCE_LIMIT" FROMINSTANCE="LKP_COUNTY_LIMITS" FROMINSTANCETYPE="Lookup" TOFIELD="HIGH_BALANCE_LIMIT" TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+  <CONNECTOR FROMFIELD="OUT_COUNTY_NAME"        FROMINSTANCE="LKP_COUNTY_LIMITS" FROMINSTANCETYPE="Lookup" TOFIELD="COUNTY_NAME"        TOINSTANCE="EXP_DERIVE" TOINSTANCETYPE="Expression"/>
+
+  <!-- EXP → TGT -->
+  <CONNECTOR FROMFIELD="PROPERTY_ID"           FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="PROPERTY_ID"           TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="APN"                    FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="APN"                    TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="STREET_ADDRESS"         FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="STREET_ADDRESS"         TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="CITY"                   FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="CITY"                   TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="STATE_CODE"             FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="STATE_CODE"             TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="ZIP_CODE"               FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="ZIP_CODE"               TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="COUNTY_FIPS"            FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="COUNTY_FIPS"            TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="COUNTY_NAME"            FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="COUNTY_NAME"            TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="MSA_CODE"               FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="MSA_CODE"               TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="APPRAISED_VALUE"         FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="APPRAISED_VALUE"         TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_DATE"         FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="APPRAISAL_DATE"         TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="APPRAISAL_METHOD"       FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="APPRAISAL_METHOD"       TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="PROPERTY_TYPE"          FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="PROPERTY_TYPE"           TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="GROSS_LIVING_AREA_SQFT" FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="GROSS_LIVING_AREA_SQFT"  TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="YEAR_BUILT"             FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="YEAR_BUILT"              TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="AVM_CONFIDENCE_SCORE"   FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="AVM_CONFIDENCE_SCORE"    TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="PRICE_PER_SQFT"         FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="PRICE_PER_SQFT"          TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="VALUE_CHANGE"           FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="VALUE_CHANGE"            TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="VALUE_CHANGE_PCT"       FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="VALUE_CHANGE_PCT"        TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="MARKET_CONDITION"       FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="MARKET_CONDITION"        TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="VALUE_BAND"             FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="VALUE_BAND"              TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="IS_CONFORMING_VALUE"    FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="IS_CONFORMING_VALUE"     TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+  <CONNECTOR FROMFIELD="CONFORMING_LIMIT"       FROMINSTANCE="EXP_DERIVE" FROMINSTANCETYPE="Expression" TOFIELD="CONFORMING_LIMIT"        TOINSTANCE="DIM_PROPERTY_APPRAISAL" TOINSTANCETYPE="Target Definition"/>
+
+  <!-- ── Instance placements ── -->
+  <INSTANCE NAME="SQ_APPRAISALS"             REUSABLE="NO"  TRANSFORMATION="SQ_APPRAISALS"             TYPE="Source Qualifier"  X="80"  Y="220"/>
+  <INSTANCE NAME="SRT_BY_PROPERTY_DATE"      REUSABLE="NO"  TRANSFORMATION="SRT_BY_PROPERTY_DATE"      TYPE="Sorter"            X="280" Y="220"/>
+  <INSTANCE NAME="RNK_LATEST_PER_PROPERTY"   REUSABLE="NO"  TRANSFORMATION="RNK_LATEST_PER_PROPERTY"   TYPE="Rank"              X="480" Y="220"/>
+  <INSTANCE NAME="LKP_COUNTY_LIMITS"         REUSABLE="YES" TRANSFORMATION="LKP_COUNTY_LIMITS"         TYPE="Lookup"            X="680" Y="80"/>
+  <INSTANCE NAME="EXP_DERIVE"                REUSABLE="NO"  TRANSFORMATION="EXP_DERIVE"                TYPE="Expression"        X="780" Y="220"/>
+  <INSTANCE NAME="DIM_PROPERTY_APPRAISAL"    REUSABLE="NO"  TRANSFORMATION="DIM_PROPERTY_APPRAISAL"    TYPE="Target Definition" X="1020" Y="220"/>
+
+</MAPPING>
+</FOLDER>
+</REPOSITORY>
+</POWERMART>

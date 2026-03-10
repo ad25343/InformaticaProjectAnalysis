@@ -12,11 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   data model, success metrics, security architecture, and version roadmap (v0.1.0–v1.0.0)
 - DESIGN.md — complete design document covering all 5 phases, pattern grouping,
   variation tiers, structural classification, strategy document format, human gate,
-  project config, integration contract with InformaticaConversion, and UI design
+  project config, and UI design
 - SECURITY.md — security policy covering input validation, infrastructure, generated
   output, and API security headers
+- USER_GUIDE.md — complete user guide covering setup, project config reference,
+  analysis phases, UI views, operating modes, API reference, troubleshooting, glossary
 - Sample project config (`firstbank_migration.project.yaml`) for the 50-mapping
   FirstBank test estate
-- InformaticaConversion v2.15.0 reference codebase in `ConversionFolder/` for
-  parser reuse and integration point analysis
+- UI wireframes: dashboard (01), pattern groups (02), dependency graph (03)
 - Project baseline: LICENSE (CC BY-NC 4.0), .gitignore, CHANGELOG.md, .env.example

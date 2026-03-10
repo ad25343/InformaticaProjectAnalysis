@@ -1,0 +1,2876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Informatica Conversion Tool</title>
+  <style>
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --surface2: #252836;
+      --border: #2e3145; --accent: #6c63ff; --accent2: #4ade80;
+      --warn: #fb923c; --danger: #f87171; --success: #4ade80; --text: #e2e8f0;
+      --muted: #94a3b8; --radius: 10px;
+      --sev-critical: #f87171; --sev-high: #fb923c;
+      --sev-medium: #fbbf24; --sev-low: #60a5fa; --sev-info: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; min-height: 100vh; }
+
+    /* ── Layout ── */
+    .app { display: grid; grid-template-columns: 300px 1fr; min-height: 100vh; }
+    .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 24px 16px; display: flex; flex-direction: column; gap: 20px; }
+    .main { padding: 32px; overflow-y: auto; }
+
+    /* ── Header ── */
+    .logo { font-size: 15px; font-weight: 700; color: var(--accent); letter-spacing: .5px; margin-bottom: 4px; }
+    .logo-sub { font-size: 11px; color: var(--muted); }
+    hr { border: none; border-top: 1px solid var(--border); }
+
+    /* ── Upload zone ── */
+    .upload-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px 16px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; }
+    .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(108,99,255,.06); }
+    .upload-zone input { display: none; }
+    .upload-icon { font-size: 28px; margin-bottom: 8px; }
+    .upload-label { font-size: 13px; color: var(--muted); }
+    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: opacity .15s, transform .1s; }
+    .btn:active { transform: scale(.97); }
+    .btn-primary { background: var(--accent); color: #fff; width: 100%; justify-content: center; margin-top: 10px; }
+    .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-success { background: var(--accent2); color: #000; }
+    .btn-danger  { background: var(--danger);  color: #fff; }
+    .btn-warn    { background: var(--warn);     color: #000; }
+    .btn-ghost   { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+    /* ── Job list ── */
+    .section-title { font-size: 11px; font-weight: 700; letter-spacing: .8px; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; }
+    .job-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; flex: 1; }
+    .history-header { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 6px 4px; border-radius: 6px; margin-top: 10px; user-select: none; }
+    .history-header:hover { background: var(--surface2); }
+    .history-chevron { font-size: 10px; color: var(--muted); transition: transform 0.2s ease; }
+    .job-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; transition: background .15s, border-color .15s; }
+    .job-item:hover { background: var(--surface2); }
+    .job-item.active { background: var(--surface2); border-color: var(--accent); }
+    .job-item.status-complete { border-left: 3px solid #22c55e; background: rgba(34,197,94,.05); }
+    .job-item.status-complete.active { border-color: #22c55e; border-left-width: 3px; }
+    .job-item.batch-child { padding: 7px 10px; border-radius: 6px; }
+    .batch-group { margin-bottom: 4px; }
+    .job-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .job-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; }
+    .badge-pending   { background: #334155; color: #94a3b8; }
+    .badge-complete  { background: #166534; color: #86efac; border: 1px solid #22c55e; font-weight: 700; }
+    .badge-running   { background: #1e3a5f; color: #60a5fa; }
+    .badge-waiting   { background: #3b2f00; color: #fbbf24; }
+
+    .badge-failed    { background: #450a0a; color: #f87171; }
+    .badge-blocked   { background: #450a0a; color: #f87171; }
+    .badge-rejected  { background: #450a0a; color: #f87171; }
+
+    /* ── Main panel ── */
+    .panel-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    .panel-sub { font-size: 14px; color: var(--muted); margin-bottom: 24px; }
+
+    /* ── Pipeline stepper ── */
+    .stepper { display: flex; gap: 0; margin-bottom: 32px; }
+    .step { flex: 1; position: relative; }
+    .step-inner { display: flex; flex-direction: column; align-items: center; }
+    .step-dot { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--border); background: var(--surface); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--muted); position: relative; z-index: 1; transition: all .3s; }
+    .step-dot.done    { background: var(--accent2); border-color: var(--accent2); color: #000; }
+    .step-dot.active  { background: var(--accent); border-color: var(--accent); color: #fff; animation: pulse 1.5s infinite; }
+    .step-dot.blocked { background: var(--danger); border-color: var(--danger); color: #fff; }
+    .step-dot.waiting { background: #fbbf24; border-color: #fbbf24; color: #000; }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(108,99,255,.5); } 50% { box-shadow: 0 0 0 8px rgba(108,99,255,0); } }
+    .step-label { font-size: 9px; color: var(--muted); margin-top: 5px; text-align: center; max-width: 52px; line-height: 1.3; }
+    .step-connector { position: absolute; top: 13px; left: 50%; right: -50%; height: 2px; background: var(--border); z-index: 0; }
+    .step-connector.done { background: var(--accent2); }
+    .step:last-child .step-connector { display: none; }
+
+    /* ── Cards ── */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .card-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+    .card-title:hover { opacity: 0.85; }
+    .card-title .icon { font-size: 16px; }
+    .card-chevron { margin-left: auto; font-size: 11px; color: var(--muted); transition: transform 0.2s ease; flex-shrink: 0; padding-left: 4px; }
+    .card-collapsed .card-chevron { transform: rotate(-90deg); }
+    .card-body { padding-top: 2px; }
+    .card-collapsed .card-body { display: none; }
+    .card-collapsed > .card-title { margin-bottom: 0 !important; }
+
+    /* ── Error card ── */
+    .error-card { background: rgba(248,113,113,.06); border: 1px solid var(--danger); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .error-card .card-title { color: var(--danger); }
+    .error-msg { font-size: 14px; font-weight: 600; color: var(--danger); margin-bottom: 10px; word-break: break-word; }
+    .error-trace { background: #0a0a0a; border: 1px solid #450a0a; border-radius: 8px; padding: 12px; font-family: monospace; font-size: 11px; color: #fca5a5; max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; display: none; }
+    .error-trace.visible { display: block; }
+    .error-toggle { font-size: 12px; color: var(--muted); cursor: pointer; text-decoration: underline; margin-top: 8px; display: inline-block; }
+    .error-actions { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+
+    /* ── Rejected card ── */
+    .rejected-card { background: rgba(248,113,113,.04); border: 1px solid #7f1d1d; border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .rejected-card h3 { font-size: 16px; color: var(--danger); margin-bottom: 8px; }
+    .next-steps { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+    .next-step { display: flex; gap: 12px; padding: 12px; background: var(--surface2); border-radius: 8px; border-left: 3px solid var(--warn); }
+    .next-step-num { font-size: 18px; font-weight: 800; color: var(--warn); flex-shrink: 0; width: 24px; }
+    .next-step-content { font-size: 13px; }
+    .next-step-content strong { display: block; margin-bottom: 3px; }
+    .next-step-content span { color: var(--muted); font-size: 12px; }
+
+    /* ── Complexity badge ── */
+    .tier-low      { color: #4ade80; }
+    .tier-medium   { color: #fbbf24; }
+    .tier-high     { color: #fb923c; }
+    .tier-veryhigh { color: #f87171; }
+
+    /* ── Verification flags (enhanced) ── */
+    .flag-list { display: flex; flex-direction: column; gap: 10px; }
+    .flag { padding: 12px 14px; border-radius: 8px; border-left: 3px solid; font-size: 13px; }
+    .flag.blocking     { background: rgba(248,113,113,.07); border-color: var(--sev-critical); }
+    .flag.sev-critical { background: rgba(248,113,113,.07); border-color: var(--sev-critical); }
+    .flag.sev-high     { background: rgba(251,146,60,.07);  border-color: var(--sev-high); }
+    .flag.sev-medium   { background: rgba(251,191,36,.07);  border-color: var(--sev-medium); }
+    .flag.sev-low      { background: rgba(96,165,250,.07);  border-color: var(--sev-low); }
+    .flag.sev-info     { background: rgba(148,163,184,.07); border-color: var(--sev-info); }
+    .flag-header { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+    .flag-type { font-weight: 700; font-size: 11px; letter-spacing: .4px; }
+    .sev-badge { padding: 1px 7px; border-radius: 99px; font-size: 10px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; }
+    .sev-badge.CRITICAL { background: rgba(248,113,113,.2); color: var(--sev-critical); }
+    .sev-badge.HIGH     { background: rgba(251,146,60,.2);  color: var(--sev-high); }
+    .sev-badge.MEDIUM   { background: rgba(251,191,36,.2);  color: var(--sev-medium); }
+    .sev-badge.LOW      { background: rgba(96,165,250,.2);  color: var(--sev-low); }
+    .sev-badge.INFO     { background: rgba(148,163,184,.2); color: var(--sev-info); }
+    .flag-blocking-pill { background: rgba(248,113,113,.2); color: var(--danger); padding: 1px 7px; border-radius: 99px; font-size: 10px; font-weight: 700; }
+    .flag-loc  { font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+    .flag-desc { font-size: 12px; color: var(--text); margin-bottom: 0; }
+    .flag-rec  { margin-top: 8px; padding: 8px 10px; background: rgba(108,99,255,.07); border-radius: 6px; font-size: 12px; color: #a5b4fc; border-left: 2px solid var(--accent); }
+    .flag-rec::before { content: "💡 Recommendation: "; font-weight: 700; }
+
+    /* ── Check list ── */
+    .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .check { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-radius: 6px; background: var(--surface2); font-size: 12px; }
+    .check.pass { border-left: 2px solid var(--accent2); }
+    .check.fail { border-left: 2px solid var(--danger); }
+    .check-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+    /* ── Sign-off form ── */
+    .signoff-form { display: flex; flex-direction: column; gap: 14px; }
+    .form-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%; padding: 9px 12px; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text); font-size: 13px; outline: none;
+      transition: border-color .2s;
+    }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--accent); }
+    .form-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    /* ── Code viewer ── */
+    .code-tabs { display: flex; gap: 4px; margin-bottom: 0; flex-wrap: wrap; }
+    .code-tab { padding: 6px 14px; border-radius: 6px 6px 0 0; font-size: 12px; font-weight: 600; cursor: pointer; background: var(--surface2); color: var(--muted); border: 1px solid var(--border); border-bottom: none; transition: all .15s; }
+    .code-tab.active { background: var(--surface); color: var(--text); border-color: var(--border); border-bottom: 1px solid var(--surface); }
+    .code-block { background: var(--surface2); border: 1px solid var(--border); border-radius: 0 8px 8px 8px; padding: 16px; overflow-x: auto; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; max-height: 600px; overflow-y: auto; white-space: pre; }
+
+    /* ── Doc viewer ── */
+    .doc-content { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 20px; max-height: 600px; overflow-y: auto; font-size: 13px; line-height: 1.7; }
+    .doc-content h1 { font-size: 18px; margin-bottom: 12px; color: var(--accent); }
+    .doc-content h2 { font-size: 15px; margin: 16px 0 8px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+    .doc-content h3 { font-size: 13px; margin: 12px 0 6px; color: var(--accent2); }
+    .doc-content code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 11px; }
+    .doc-content pre { background: var(--bg); padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 11px; margin: 8px 0; }
+    .doc-content table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+    .doc-content th { background: var(--border); padding: 6px 10px; text-align: left; font-size: 11px; }
+    .doc-content td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    .doc-content strong { color: var(--text); }
+
+    /* ── Stats row ── */
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .stat { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+    .stat-val { font-size: 24px; font-weight: 700; }
+    .stat-label { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    /* ── Output files panel ── */
+    .output-files { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 16px; }
+    .output-file-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+    .output-file-card:hover { border-color: var(--accent); background: rgba(108,99,255,.05); }
+    .output-file-icon { font-size: 24px; margin-bottom: 6px; }
+    .output-file-name { font-size: 11px; font-weight: 600; word-break: break-all; }
+    .output-file-type { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+    /* ── Empty state ── */
+    .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .empty-icon { font-size: 48px; margin-bottom: 16px; }
+    .empty-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+    .empty-sub { font-size: 13px; }
+
+    /* ── Pipeline log panel ── */
+    .log-panel { background: #0a0c14; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .log-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--surface2); border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 700; }
+    .log-panel-header .log-count { font-size: 11px; color: var(--muted); font-weight: 400; }
+    .log-scroll { max-height: 320px; overflow-y: auto; padding: 10px 14px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11px; line-height: 1.8; }
+    .log-row { display: flex; gap: 10px; border-bottom: 1px solid rgba(255,255,255,.03); padding: 2px 0; }
+    .log-row:last-child { border-bottom: none; }
+    .log-ts   { color: #4b5563; flex-shrink: 0; width: 85px; }
+    .log-step { color: #6366f1; flex-shrink: 0; width: 54px; }
+    .log-lvl  { flex-shrink: 0; width: 56px; font-weight: 700; }
+    .log-lvl.INFO     { color: #4ade80; }
+    .log-lvl.WARNING  { color: #fbbf24; }
+    .log-lvl.ERROR    { color: #f87171; }
+    .log-msg  { color: #cbd5e1; white-space: pre-wrap; word-break: break-word; flex: 1; }
+    .log-data { color: #475569; font-size: 10px; }
+    .log-exc  { color: #f87171; white-space: pre-wrap; font-size: 10px; display: block; margin-top: 4px; }
+
+    /* ── Log ── (legacy, keep for compatibility) */
+    .log { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; line-height: 1.8; }
+    .log-entry { color: var(--muted); }
+    .log-entry.info  { color: #60a5fa; }
+    .log-entry.ok    { color: #4ade80; }
+    .log-entry.warn  { color: #fbbf24; }
+    .log-entry.error { color: #f87171; }
+
+    /* ── Info box ── */
+    .info-box { background: rgba(108,99,255,.07); border: 1px solid rgba(108,99,255,.25); border-radius: 8px; padding: 12px 14px; font-size: 12px; color: #a5b4fc; margin-bottom: 12px; }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { border-right: none; border-bottom: 1px solid var(--border); }
+      .check-grid { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: 1fr 1fr; }
+    }
+
+    /* ── Report download actions ── */
+    .report-actions { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+    .report-actions .lbl { font-size: 11px; color: var(--muted); margin-right: 2px; }
+
+    /* ── Print / PDF styles ── */
+    @media print {
+      .sidebar, .report-actions, .log-panel, .error-actions button,
+      .form-actions, #codeReviewForm, .btn-primary { display: none !important; }
+      .app   { display: block !important; }
+      .main  { padding: 20px !important; overflow: visible !important; }
+      body   { background: #fff !important; color: #111 !important; font-size: 12px; }
+      .card  { background: #fff !important; border: 1px solid #ccc !important;
+               margin-bottom: 12px !important; break-inside: avoid; }
+      .card-title  { color: #111 !important; font-size: 13px !important; }
+      .panel-title { color: #111 !important; }
+      .panel-sub   { color: #555 !important; }
+      .badge { background: #eee !important; color: #333 !important; border: 1px solid #ccc !important; }
+      .card-collapsed .card-body { display: block !important; }
+      .code-block  { max-height: none !important; overflow: visible !important;
+                     white-space: pre-wrap !important; word-break: break-all !important;
+                     background: #f8f8f8 !important; color: #111 !important;
+                     border: 1px solid #ddd !important; font-size: 10px !important; }
+      .log-scroll  { max-height: none !important; overflow: visible !important; }
+      .stepper     { display: none !important; }
+      pre, code    { background: #f5f5f5 !important; color: #111 !important; }
+      .stat        { background: #f5f5f5 !important; border: 1px solid #ddd !important; }
+      .stat-val    { color: #111 !important; }
+      .error-card  { background: #fff8f8 !important; border-color: #e88 !important; }
+      .flag        { background: #fafafa !important; }
+      @page        { margin: 0.75in; size: A4; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Sidebar ─────────────────────────── -->
+  <aside class="sidebar">
+    <div>
+      <div class="logo">⚡ Informatica Converter</div>
+      <div class="logo-sub">PowerCenter → Python / PySpark / dbt</div>
+    </div>
+    <hr/>
+
+    <!-- Upload (v1.1 multi-file + ZIP) -->
+    <div>
+      <div class="section-title">New Conversion</div>
+
+      <!-- Upload mode toggle -->
+      <div style="display:flex;gap:4px;margin-bottom:10px;background:var(--surface);border-radius:8px;padding:3px">
+        <button id="tabFiles" class="btn btn-sm btn-primary" style="flex:1;font-size:12px;padding:5px 0"
+                onclick="setUploadMode('files')">📄 Individual Files</button>
+        <button id="tabZip" class="btn btn-sm btn-ghost" style="flex:1;font-size:12px;padding:5px 0"
+                onclick="setUploadMode('zip')">🗜 ZIP Archive</button>
+        <button id="tabBatch" class="btn btn-sm btn-ghost" style="flex:1;font-size:12px;padding:5px 0"
+                onclick="setUploadMode('batch')">📦 Batch</button>
+      </div>
+
+      <!-- ── Individual files panel ── -->
+      <div id="panelFiles">
+        <!-- Mapping XML (required) -->
+        <div class="upload-zone" id="dropzone">
+          <input type="file" id="fileInput" accept=".xml"/>
+          <div class="upload-icon">📂</div>
+          <div class="upload-label" id="fileLabel">Mapping XML (required)<br/>Drop .xml here or click to browse</div>
+        </div>
+
+        <!-- Workflow XML (optional, v1.1) -->
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px">
+            Workflow XML <span style="font-weight:400;color:var(--muted)">(optional — session config)</span>
+          </label>
+          <div class="upload-zone" id="dropzoneWF" style="padding:12px 10px">
+            <input type="file" id="workflowInput" accept=".xml"/>
+            <div class="upload-label" id="workflowLabel" style="font-size:12px">Drop Workflow .xml here or click to add</div>
+          </div>
+        </div>
+
+        <!-- Parameter file (optional, v1.1) -->
+        <div style="margin-top:8px">
+          <label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:4px">
+            Parameter File <span style="font-weight:400;color:var(--muted)">(optional — $$VAR resolution)</span>
+          </label>
+          <div class="upload-zone" id="dropzonePF" style="padding:12px 10px">
+            <input type="file" id="paramInput" accept=".txt,.par,.properties"/>
+            <div class="upload-label" id="paramLabel" style="font-size:12px">Drop parameter file here or click to add</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── ZIP archive panel ── -->
+      <div id="panelZip" style="display:none">
+        <div class="upload-zone" id="dropzoneZip">
+          <input type="file" id="zipInput" accept=".zip"/>
+          <div class="upload-icon">🗜</div>
+          <div class="upload-label" id="zipLabel">
+            Drop .zip archive here or click to browse<br/>
+            <span style="font-size:11px;color:var(--muted)">Must contain a Mapping XML — Workflow &amp; params auto-detected</span>
+          </div>
+        </div>
+        <div id="zipWarnings" style="display:none;font-size:11px;color:var(--warn);margin-top:6px"></div>
+      </div>
+
+      <!-- ── Batch ZIP panel (v2.0) ── -->
+      <div id="panelBatch" style="display:none">
+        <div class="upload-zone" id="dropzoneBatch">
+          <input type="file" id="batchInput" accept=".zip"/>
+          <div class="upload-icon">📦</div>
+          <div class="upload-label" id="batchLabel">
+            Drop batch .zip here or click to browse<br/>
+            <span style="font-size:11px;color:var(--muted)">One subfolder per mapping — up to 3 run concurrently</span>
+          </div>
+        </div>
+        <div style="margin-top:8px;padding:8px 10px;background:var(--surface);border-radius:6px;font-size:11px;color:var(--muted);line-height:1.6">
+          <strong style="color:var(--text)">ZIP structure:</strong><br/>
+          batch.zip / mapping_a / mapping.xml<br/>
+          batch.zip / mapping_a / workflow.xml <em>(optional)</em><br/>
+          batch.zip / mapping_b / mapping.xml &nbsp;…
+        </div>
+        <div id="batchWarnings" style="display:none;font-size:11px;color:var(--warn);margin-top:6px"></div>
+      </div>
+
+      <button class="btn btn-primary" id="startBtn" disabled>▶ Start Pipeline</button>
+    </div>
+    <hr/>
+
+    <!-- Security KB pill -->
+    <div id="secKbBadge" style="display:none;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;color:var(--muted)">
+      🛡 Security KB: <span id="secKbRules">–</span> rules &nbsp;·&nbsp; <span id="secKbPatterns">–</span> learned patterns
+    </div>
+
+    <!-- Job list -->
+    <div class="section-title">Jobs</div>
+    <div class="job-list" id="jobList">
+      <div class="empty" style="padding:20px 0">
+        <div style="font-size:24px">📋</div>
+        <div style="font-size:12px;margin-top:8px">No jobs yet</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main Panel ───────────────────────── -->
+  <main class="main" id="mainPanel">
+    <div class="empty">
+      <div class="empty-icon">🔄</div>
+      <div class="empty-title">Informatica Conversion Tool</div>
+      <div class="empty-sub">Upload an Informatica XML export to begin.<br/>The 12-step pipeline will parse, document, verify, convert,<br/>security scan, quality review, generate tests, and deliver reviewed, production-ready code.</div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+let currentJobId = null;
+let selectedFile = null;
+let eventSource = null;
+
+const STEPS = [
+  { n:1,  label:"Parse" },
+  { n:2,  label:"Classify" },
+  { n:3,  label:"Document" },
+  { n:4,  label:"Verify" },
+  { n:5,  label:"Review" },
+  { n:6,  label:"Stack" },
+  { n:7,  label:"Convert" },
+  { n:8,  label:"Security" },
+  { n:9,  label:"Sec Rev" },
+  { n:10, label:"Quality" },
+  { n:11, label:"Tests" },
+  { n:12, label:"Sign-Off" },
+];
+
+const STATUS_BADGE = {
+  pending:         ['badge-pending','Pending'],
+  parsing:         ['badge-running','Parsing'],
+  classifying:     ['badge-running','Classifying'],
+  documenting:     ['badge-running','Documenting'],
+  verifying:       ['badge-running','Verifying'],
+  awaiting_review: ['badge-waiting','Awaiting Review'],
+  assigning_stack: ['badge-running','Assigning Stack'],
+  converting:        ['badge-running','Converting'],
+  security_scanning:      ['badge-running','Security Scan'],
+  validating:             ['badge-running','Security Scan'],
+  awaiting_security_review: ['badge-waiting','Sec Review'],
+  reviewing:              ['badge-running','Quality Review'],
+  testing:                ['badge-running','Testing'],
+  awaiting_code_review:   ['badge-waiting','Code Review'],
+  complete:             ['badge-complete','Complete'],
+  failed:               ['badge-failed','Failed'],
+  blocked:              ['badge-blocked','Blocked'],
+};
+
+const SEV_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4 };
+
+// ─────────────────────────────────────────────
+// Upload handling (v1.1 multi-file + ZIP; v2.0 batch)
+// ─────────────────────────────────────────────
+const dropzone      = document.getElementById('dropzone');
+const fileInput     = document.getElementById('fileInput');
+const fileLabel     = document.getElementById('fileLabel');
+const startBtn      = document.getElementById('startBtn');
+
+const dropzoneWF    = document.getElementById('dropzoneWF');
+const workflowInput = document.getElementById('workflowInput');
+const workflowLabel = document.getElementById('workflowLabel');
+
+const dropzonePF    = document.getElementById('dropzonePF');
+const paramInput    = document.getElementById('paramInput');
+const paramLabel    = document.getElementById('paramLabel');
+
+const dropzoneZip   = document.getElementById('dropzoneZip');
+const zipInput      = document.getElementById('zipInput');
+const zipLabel      = document.getElementById('zipLabel');
+const zipWarnings   = document.getElementById('zipWarnings');
+
+// v2.0 batch elements
+const dropzoneBatch = document.getElementById('dropzoneBatch');
+const batchInput    = document.getElementById('batchInput');
+const batchLabel    = document.getElementById('batchLabel');
+const batchWarnings = document.getElementById('batchWarnings');
+
+let selectedWorkflowFile = null;
+let selectedParamFile    = null;
+let selectedZipFile      = null;
+let selectedBatchFile    = null;          // v2.0
+let uploadMode           = 'files';       // 'files' | 'zip' | 'batch'
+
+// ── Upload mode toggle ────────────────────────
+function setUploadMode(mode) {
+  uploadMode = mode;
+  document.getElementById('panelFiles').style.display = mode === 'files' ? '' : 'none';
+  document.getElementById('panelZip').style.display   = mode === 'zip'   ? '' : 'none';
+  document.getElementById('panelBatch').style.display = mode === 'batch' ? '' : 'none';
+  const tabFiles = document.getElementById('tabFiles');
+  const tabZip   = document.getElementById('tabZip');
+  const tabBatch = document.getElementById('tabBatch');
+  tabFiles.className = mode === 'files' ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-ghost';
+  tabZip.className   = mode === 'zip'   ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-ghost';
+  tabBatch.className = mode === 'batch' ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-ghost';
+  if (mode === 'files')  startBtn.disabled = !selectedFile;
+  if (mode === 'zip')    startBtn.disabled = !selectedZipFile;
+  if (mode === 'batch')  startBtn.disabled = !selectedBatchFile;
+}
+
+// Workflow XML dropzone wiring
+dropzoneWF.addEventListener('click', () => workflowInput.click());
+dropzoneWF.addEventListener('dragover', e => { e.preventDefault(); dropzoneWF.classList.add('drag'); });
+dropzoneWF.addEventListener('dragleave', () => dropzoneWF.classList.remove('drag'));
+dropzoneWF.addEventListener('drop', e => {
+  e.preventDefault(); dropzoneWF.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.xml')) setWorkflowFile(f);
+});
+workflowInput.addEventListener('change', () => { if (workflowInput.files[0]) setWorkflowFile(workflowInput.files[0]); });
+
+function setWorkflowFile(f) {
+  selectedWorkflowFile = f;
+  workflowLabel.innerHTML = `✅ ${f.name} <span style="color:var(--muted);font-weight:400">(${(f.size/1024).toFixed(1)} KB)</span>`;
+  dropzoneWF.style.borderColor = 'var(--success)';
+}
+
+// Parameter file dropzone wiring
+dropzonePF.addEventListener('click', () => paramInput.click());
+dropzonePF.addEventListener('dragover', e => { e.preventDefault(); dropzonePF.classList.add('drag'); });
+dropzonePF.addEventListener('dragleave', () => dropzonePF.classList.remove('drag'));
+dropzonePF.addEventListener('drop', e => {
+  e.preventDefault(); dropzonePF.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f) setParamFile(f);
+});
+paramInput.addEventListener('change', () => { if (paramInput.files[0]) setParamFile(paramInput.files[0]); });
+
+function setParamFile(f) {
+  selectedParamFile = f;
+  paramLabel.innerHTML = `✅ ${f.name} <span style="color:var(--muted);font-weight:400">(${(f.size/1024).toFixed(1)} KB)</span>`;
+  dropzonePF.style.borderColor = 'var(--success)';
+}
+
+// Mapping XML dropzone wiring
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault(); dropzone.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.xml')) setFile(f);
+});
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) setFile(fileInput.files[0]); });
+
+function setFile(f) {
+  selectedFile = f;
+  fileLabel.textContent = f.name;
+  if (uploadMode === 'files') startBtn.disabled = false;
+}
+
+// ZIP dropzone wiring
+dropzoneZip.addEventListener('click', () => zipInput.click());
+dropzoneZip.addEventListener('dragover', e => { e.preventDefault(); dropzoneZip.classList.add('drag'); });
+dropzoneZip.addEventListener('dragleave', () => dropzoneZip.classList.remove('drag'));
+dropzoneZip.addEventListener('drop', e => {
+  e.preventDefault(); dropzoneZip.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.zip')) setZipFile(f);
+});
+zipInput.addEventListener('change', () => { if (zipInput.files[0]) setZipFile(zipInput.files[0]); });
+
+function setZipFile(f) {
+  selectedZipFile = f;
+  zipLabel.innerHTML = `✅ ${f.name} <span style="color:var(--muted);font-weight:400">(${(f.size/1024/1024).toFixed(2)} MB)</span>`;
+  dropzoneZip.style.borderColor = 'var(--success)';
+  zipWarnings.style.display = 'none';
+  if (uploadMode === 'zip') startBtn.disabled = false;
+}
+
+// Batch ZIP dropzone wiring (v2.0)
+dropzoneBatch.addEventListener('click', () => batchInput.click());
+dropzoneBatch.addEventListener('dragover', e => { e.preventDefault(); dropzoneBatch.classList.add('drag'); });
+dropzoneBatch.addEventListener('dragleave', () => dropzoneBatch.classList.remove('drag'));
+dropzoneBatch.addEventListener('drop', e => {
+  e.preventDefault(); dropzoneBatch.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.zip')) setBatchFile(f);
+});
+batchInput.addEventListener('change', () => { if (batchInput.files[0]) setBatchFile(batchInput.files[0]); });
+
+function setBatchFile(f) {
+  selectedBatchFile = f;
+  batchLabel.innerHTML = `✅ ${f.name} <span style="color:var(--muted);font-weight:400">(${(f.size/1024/1024).toFixed(2)} MB)</span>`;
+  dropzoneBatch.style.borderColor = 'var(--success)';
+  batchWarnings.style.display = 'none';
+  if (uploadMode === 'batch') startBtn.disabled = false;
+}
+
+// ── Start button ─────────────────────────────
+startBtn.addEventListener('click', async () => {
+  startBtn.disabled = true;
+
+  if (uploadMode === 'batch') {
+    // ── Batch upload path (v2.0) ─────────────
+    if (!selectedBatchFile) { startBtn.disabled = false; return; }
+    const fd = new FormData();
+    fd.append('file', selectedBatchFile);
+    try {
+      const res  = await fetch('/api/jobs/batch', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.batch_id) {
+        if (data.warnings && data.warnings.length) {
+          batchWarnings.innerHTML = '⚠️ ' + data.warnings.map(esc).join('<br/>⚠️ ');
+          batchWarnings.style.display = 'block';
+        }
+        await loadJobs();
+        // Open first job in the batch to give immediate feedback
+        if (data.jobs && data.jobs.length) openJob(data.jobs[0].job_id);
+      } else {
+        alert('Batch upload failed: ' + JSON.stringify(data));
+        startBtn.disabled = false;
+      }
+    } catch(e) {
+      alert('Batch upload error: ' + e.message);
+      startBtn.disabled = false;
+    }
+  } else if (uploadMode === 'zip') {
+    // ── ZIP upload path ──────────────────────
+    if (!selectedZipFile) { startBtn.disabled = false; return; }
+    const fd = new FormData();
+    fd.append('file', selectedZipFile);
+    try {
+      const res  = await fetch('/api/jobs/zip', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.job_id) {
+        if (data.warnings && data.warnings.length) {
+          zipWarnings.innerHTML = '⚠️ ' + data.warnings.map(esc).join('<br/>⚠️ ');
+          zipWarnings.style.display = 'block';
+        }
+        await loadJobs();
+        openJob(data.job_id);
+      } else {
+        alert('ZIP upload failed: ' + JSON.stringify(data));
+        startBtn.disabled = false;
+      }
+    } catch(e) {
+      alert('ZIP upload error: ' + e.message);
+      startBtn.disabled = false;
+    }
+  } else {
+    // ── Individual files path ────────────────
+    if (!selectedFile) { startBtn.disabled = false; return; }
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+    if (selectedWorkflowFile) fd.append('workflow_file', selectedWorkflowFile);
+    if (selectedParamFile)    fd.append('parameter_file', selectedParamFile);
+    try {
+      const res  = await fetch('/api/jobs', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.job_id) {
+        // Reset optional file selections for next upload
+        selectedWorkflowFile = null; selectedParamFile = null;
+        workflowLabel.textContent = 'Drop Workflow .xml here or click to add';
+        paramLabel.textContent    = 'Drop parameter file here or click to add';
+        dropzoneWF.style.borderColor = ''; dropzonePF.style.borderColor = '';
+        await loadJobs();
+        openJob(data.job_id);
+      } else {
+        alert('Upload failed: ' + JSON.stringify(data));
+        startBtn.disabled = false;
+      }
+    } catch(e) {
+      alert('Upload error: ' + e.message);
+      startBtn.disabled = false;
+    }
+  }
+});
+
+// ─────────────────────────────────────────────
+// Job List
+// ─────────────────────────────────────────────
+async function loadJobs() {
+  try {
+    const res  = await fetch('/api/jobs');
+    const data = await res.json();
+    let history = [];
+    try {
+      const histRes  = await fetch('/api/logs/history');
+      const histData = await histRes.json();
+      history = histData.history || [];
+    } catch(he) { /* history is supplemental — never break the main list */ }
+    renderJobList(data.jobs || [], history);
+  } catch(e) { /* ignore poll errors */ }
+}
+
+// Statuses that mean a job is still running / waiting for action
+const _ACTIVE_STATUSES = new Set([
+  'pending','parsing','classifying','documenting','verifying',
+  'awaiting_review','assigning_stack','converting',
+  'security_scanning','validating','awaiting_security_review',
+  'reviewing','testing','awaiting_code_review'
+]);
+
+// Persists across re-renders so toggle state survives polling.
+// historyOpenSet = false means "user hasn't toggled yet, use smart default".
+let historyOpen    = false;
+let historyOpenSet = false;
+
+function toggleHistory() {
+  // On first explicit toggle, derive from current rendered state
+  if (!historyOpenSet) {
+    const list = document.getElementById('historyList');
+    historyOpen = list ? list.style.display === 'none' : true;
+  } else {
+    historyOpen = !historyOpen;
+  }
+  historyOpenSet = true;
+  const list    = document.getElementById('historyList');
+  const chevron = document.getElementById('historyChevron');
+  if (list)    list.style.display = historyOpen ? 'flex' : 'none';
+  if (chevron) chevron.style.transform = historyOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
+}
+
+function renderJobItem(j, inBatch = false) {
+  const [cls, label] = STATUS_BADGE[j.status] || ['badge-pending', j.status];
+  const isActive    = j.job_id === currentJobId;
+  const isComplete  = j.status === 'complete';
+  const stepDisplay = Math.min(j.current_step, 12);
+  // Strip folder prefix for batch items (show just the folder name)
+  const displayName = inBatch ? esc(j.filename).replace(/^[^/]+\//, '') : esc(j.filename);
+  return `<div class="job-item ${isActive ? 'active':''} ${isComplete ? 'status-complete' : ''} ${inBatch ? 'batch-child' : ''}" onclick="openJob('${j.job_id}')">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:4px">
+      <div style="min-width:0">
+        <div class="job-name">${displayName}</div>
+        <div class="job-meta"><span class="badge ${cls}">${label}</span> &nbsp; Step ${stepDisplay}/12 ${j.complexity ? '· <strong>'+j.complexity+'</strong>' : ''}</div>
+      </div>
+      <button
+        title="Delete job"
+        onclick="event.stopPropagation(); deleteJob('${j.job_id}', '${esc(j.filename)}')"
+        style="flex-shrink:0;background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:4px;color:var(--muted);font-size:14px;line-height:1;opacity:0.5;transition:opacity .15s,color .15s"
+        onmouseenter="this.style.opacity='1';this.style.color='var(--danger)'"
+        onmouseleave="this.style.opacity='0.5';this.style.color='var(--muted)'">🗑</button>
+    </div>
+  </div>`;
+}
+
+function _batchSummaryLabel(jobs) {
+  const total    = jobs.length;
+  const complete = jobs.filter(j => j.status === 'complete').length;
+  const blocked  = jobs.filter(j => j.status === 'blocked' || j.status === 'failed').length;
+  const waiting  = jobs.filter(j => ['awaiting_review','awaiting_security_review','awaiting_code_review'].includes(j.status)).length;
+  const running  = total - complete - blocked - waiting;
+  const parts = [];
+  if (complete) parts.push(`${complete} complete`);
+  if (waiting)  parts.push(`${waiting} awaiting review`);
+  if (running)  parts.push(`${running} running`);
+  if (blocked)  parts.push(`${blocked} blocked`);
+  return parts.join(' · ') || `${total} jobs`;
+}
+
+function renderBatchGroup(batchId, jobs) {
+  const summaryLabel = _batchSummaryLabel(jobs);
+  const allDone = jobs.every(j => !_ACTIVE_STATUSES.has(j.status));
+  const anyComplete = jobs.some(j => j.status === 'complete');
+  const borderColor = allDone ? (anyComplete ? 'rgba(34,197,94,.4)' : 'rgba(239,68,68,.3)') : 'var(--accent)';
+  return `
+  <div class="batch-group" style="border:1px solid ${borderColor};border-radius:8px;padding:8px;margin-bottom:2px;background:rgba(255,255,255,.02)">
+    <div style="font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+      <span>📦 Batch · ${jobs.length} mappings</span>
+      <span style="font-weight:400;font-size:10px;color:var(--muted)">${summaryLabel}</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:4px">
+      ${jobs.map(j => renderJobItem(j, true)).join('')}
+    </div>
+  </div>`;
+}
+
+function renderJobList(jobs, history = []) {
+  const el = document.getElementById('jobList');
+  if (!jobs.length && !history.length) {
+    el.innerHTML = '<div class="empty" style="padding:20px 0"><div style="font-size:24px">📋</div><div style="font-size:12px;margin-top:8px">No jobs yet</div></div>';
+    return;
+  }
+
+  // ── Separate batch vs standalone jobs ──────────────────────────────────
+  const batchMap = {};   // batch_id -> [jobs]
+  const standalone = [];
+  for (const j of jobs) {
+    if (j.batch_id) {
+      (batchMap[j.batch_id] = batchMap[j.batch_id] || []).push(j);
+    } else {
+      standalone.push(j);
+    }
+  }
+
+  // For active/history split, treat a batch as "active" if any of its jobs are active
+  const batchEntries = Object.entries(batchMap);
+  const activeBatches = batchEntries.filter(([, bj]) => bj.some(j => _ACTIVE_STATUSES.has(j.status)));
+  const pastBatches   = batchEntries.filter(([, bj]) => bj.every(j => !_ACTIVE_STATUSES.has(j.status)));
+
+  const active = standalone.filter(j =>  _ACTIVE_STATUSES.has(j.status));
+  const past   = standalone.filter(j => !_ACTIVE_STATUSES.has(j.status));
+
+  let html = '';
+
+  // ── Active / in-progress items (standalone + active batches) ─────────────
+  if (active.length || activeBatches.length) {
+    html += activeBatches.map(([bid, bj]) => renderBatchGroup(bid, bj)).join('');
+    html += active.map(j => renderJobItem(j)).join('');
+  }
+
+  // ── Past items (complete / failed / blocked) ──────────────────────────────
+  const hasPast = past.length > 0 || pastBatches.length > 0;
+  if (hasPast) {
+    const pastCount   = past.length + pastBatches.reduce((n, [, bj]) => n + bj.length, 0);
+    const defaultOpen = active.length === 0 && activeBatches.length === 0;
+    const showPast    = historyOpenSet ? historyOpen : defaultOpen;
+    html += `
+    <div class="history-header" onclick="toggleHistory()">
+      <span style="font-size:10px;font-weight:700;letter-spacing:.7px;color:var(--muted);text-transform:uppercase">History (${pastCount})</span>
+      <span id="historyChevron" class="history-chevron" style="transform:${showPast?'rotate(0deg)':'rotate(-90deg)'}">▼</span>
+    </div>
+    <div id="historyList" style="display:${showPast?'flex':'none'};flex-direction:column;gap:6px">
+      ${pastBatches.map(([bid, bj]) => renderBatchGroup(bid, bj)).join('')}
+      ${past.map(j => renderJobItem(j)).join('')}
+    </div>`;
+  }
+
+  // ── Log Archive (orphaned registry entries — DB record gone, log file intact) ──
+  if (history.length) {
+    const archOpen = historyOpenSet ? historyOpen : (active.length === 0);
+    html += `
+    <div class="history-header" onclick="toggleArchive()" style="margin-top:4px">
+      <span style="font-size:10px;font-weight:700;letter-spacing:.7px;color:var(--muted);text-transform:uppercase">Log Archive (${history.length})</span>
+      <span id="archiveChevron" class="history-chevron" style="transform:${archOpen?'rotate(0deg)':'rotate(-90deg)'}">▼</span>
+    </div>
+    <div id="archiveList" style="display:${archOpen?'flex':'none'};flex-direction:column;gap:6px">
+      ${history.map(h => renderArchiveItem(h)).join('')}
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+let archiveOpen = false;
+let archiveOpenSet = false;
+function toggleArchive() {
+  if (!archiveOpenSet) {
+    const list = document.getElementById('archiveList');
+    archiveOpen = list ? list.style.display === 'none' : true;
+  } else {
+    archiveOpen = !archiveOpen;
+  }
+  archiveOpenSet = true;
+  const list    = document.getElementById('archiveList');
+  const chevron = document.getElementById('archiveChevron');
+  if (list)    list.style.display = archiveOpen ? 'flex' : 'none';
+  if (chevron) chevron.style.transform = archiveOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
+}
+
+function renderArchiveItem(h) {
+  const name    = esc(h.mapping_name || h.xml_filename || h.job_id.slice(0,8));
+  const status  = esc(h.status || 'unknown');
+  const dateStr = (h.started_at || '').slice(0,10);
+  const isActive = h.job_id === currentJobId;
+  return `<div class="job-item ${isActive?'active':''}"
+    onclick="openHistoryJob('${h.job_id}','${name}')"
+    style="opacity:${h.log_readable?'1':'0.5'}" title="${h.log_readable?'':'Log file missing'}">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:4px">
+      <div style="min-width:0">
+        <div class="job-name">${name}</div>
+        <div class="job-meta"><span class="badge badge-success">${status}</span>&nbsp; ${dateStr}</div>
+      </div>
+      <span style="font-size:11px;color:var(--muted)" title="Archived log">🗄</span>
+    </div>
+  </div>`;
+}
+
+async function openHistoryJob(jobId, name) {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  currentJobId = jobId;
+  await loadJobs();
+
+  const panel = document.getElementById('jobPanel');
+  if (!panel) return;
+
+  // Show a loading state
+  panel.innerHTML = `<div style="padding:32px;color:var(--muted);font-size:13px">Loading log archive…</div>`;
+
+  try {
+    const res  = await fetch(`/api/logs/history/${jobId}`);
+    if (!res.ok) { panel.innerHTML = `<div style="padding:32px;color:var(--danger)">Log file not found on disk.</div>`; return; }
+    const data = await res.json();
+    const entries = data.entries || [];
+
+    const rows = entries.map(e => {
+      const ts   = (e.ts||'').slice(11,19);
+      const step = e.step != null ? `step ${e.step}`.padEnd(6) : '      ';
+      const lvl  = e.level || 'INFO';
+      const msg  = esc(e.message || '');
+      const extra = e.data ? `<span class="log-data">  ${esc(JSON.stringify(e.data))}</span>` : '';
+      const exc   = e.exc  ? `<span class="log-exc">${esc(e.exc)}</span>` : '';
+      return `<div class="log-row">
+        <span class="log-ts">${ts}</span>
+        <span class="log-step">${esc(step)}</span>
+        <span class="log-lvl ${lvl}">${lvl}</span>
+        <span class="log-msg">${msg}${extra}${exc}</span>
+      </div>`;
+    }).join('') || '<div style="color:var(--muted);padding:8px 0;font-size:11px">No log entries found.</div>';
+
+    panel.innerHTML = `
+      <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div class="panel-title">🗄 ${name}</div>
+          <div class="panel-sub" style="margin-bottom:0">Archived log &nbsp;·&nbsp; ${entries.length} entries &nbsp;·&nbsp; Job ID: ${jobId}</div>
+        </div>
+      </div>
+      <div class="log-panel" style="margin-top:16px">
+        <div class="log-header" style="display:flex;align-items:center;justify-content:space-between">
+          <span class="panel-sub" style="font-weight:700">Pipeline Log (archived)</span>
+        </div>
+        <div class="log-scroll" id="logScroll" style="height:500px;overflow-y:auto">${rows}</div>
+      </div>`;
+    const scroll = document.getElementById('logScroll');
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  } catch(e) {
+    panel.innerHTML = `<div style="padding:32px;color:var(--danger)">Failed to load log: ${esc(String(e))}</div>`;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Open Job
+// ─────────────────────────────────────────────
+async function openJob(jobId) {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  currentJobId = jobId;
+  await loadJobs();
+
+  const res = await fetch(`/api/jobs/${jobId}`);
+  const job = await res.json();
+  renderJobPanel(job);
+
+  // Subscribe to SSE for live updates
+  eventSource = new EventSource(`/api/jobs/${jobId}/stream`);
+  eventSource.onmessage = async (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'done') {
+      eventSource.close();
+      const updated = await fetch(`/api/jobs/${jobId}`);
+      renderJobPanel(await updated.json());
+      await loadJobs();
+    } else if (msg.type === 'progress' || msg.type === 'state') {
+      const updated = await fetch(`/api/jobs/${jobId}`);
+      renderJobPanel(await updated.json());
+      await loadJobs();
+    }
+  };
+  eventSource.onerror = () => eventSource.close();
+}
+
+// ─────────────────────────────────────────────
+// Render Job Panel
+// ─────────────────────────────────────────────
+function renderJobPanel(job) {
+  const state = job.state || {};
+  window._currentJobState = state;   // expose for S2T modal
+  const [badgeCls, badgeLabel] = STATUS_BADGE[job.status] || ['badge-pending', job.status];
+  const isRejected = job.status === 'blocked' && state.sign_off?.decision === 'REJECTED';
+
+  window._currentJob = job;  // used by download functions
+
+  let html = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+      <div>
+        <div class="panel-title" style="margin-bottom:4px">${esc(job.filename)} <span class="badge ${badgeCls}" style="font-size:12px;vertical-align:middle">${badgeLabel}</span></div>
+        <div class="panel-sub" style="margin-bottom:0">Job ID: ${job.job_id} &nbsp;·&nbsp; Started: ${utcDate(job.created_at).toLocaleString()}</div>
+      </div>
+      <div class="report-actions" style="margin-bottom:0;flex-shrink:0">
+        <span class="lbl">Download report:</span>
+        <button class="btn btn-ghost btn-sm" title="Download full report as Markdown" onclick="downloadReportMd()">📄 .md</button>
+        <button class="btn btn-ghost btn-sm" title="Open print-ready report — use browser Save as PDF" onclick="openPrintReport()">🖨️ PDF</button>
+        ${state.has_manifest || state.manifest_report ? `<button class="btn btn-ghost btn-sm" title="Download pre-conversion manifest — fill in yellow rows, re-upload before converting" onclick="downloadManifestXlsx()" style="color:#c07000;border-color:#c07000">📊 Manifest</button>` : ''}
+      </div>
+    </div>
+    ${renderStepper(job.current_step, job.status)}
+  `;
+
+  // ── ERROR CARD ────────────────────────────
+  if ((job.status === 'failed' || job.status === 'blocked') && !isRejected) {
+    const hasTrace = !!state.error_detail;
+    const traceId  = 'trace_' + Math.random().toString(36).slice(2);
+
+    // Build the primary error message — prefer state.error, fall back to parse flags,
+    // then a generic message so the card is never empty.
+    let errorMsg = state.error || '';
+    if (!errorMsg && state.parse_report) {
+      const flags = state.parse_report.flags || [];
+      if (flags.length) errorMsg = flags.map(f => f.detail).join(' | ');
+    }
+    if (!errorMsg) errorMsg = `Pipeline stopped at Step ${job.current_step}. Check the parse report below for details.`;
+
+    // Tailor the "What to do" hint based on known error patterns
+    let hint = 'Check the details above. Common causes: invalid XML structure, missing ANTHROPIC_API_KEY, network timeout, or unsupported transformation type.';
+    if (errorMsg.toLowerCase().includes('workflow') && errorMsg.toLowerCase().includes('mapping')) {
+      hint = '💡 It looks like you uploaded a Workflow XML as the primary mapping file. Use the <strong>Mapping XML</strong> field for the mapping export, and the optional <strong>Workflow XML</strong> field for the workflow file.';
+    } else if (errorMsg.toLowerCase().includes('no mapping')) {
+      hint = '💡 No Mapping definitions were found in the uploaded file. Make sure you export the Mapping (not the Workflow or Session) from Informatica Designer.';
+    } else if (errorMsg.toLowerCase().includes('api_key') || errorMsg.toLowerCase().includes('api key')) {
+      hint = '💡 ANTHROPIC_API_KEY is missing or invalid. Set it in your .env file and restart the server.';
+    }
+
+    html += `<div class="error-card">
+      <div class="card-title"><span class="icon">🚨</span> Pipeline Stopped — Step ${job.current_step}</div>
+      <div class="error-msg">${esc(errorMsg)}</div>
+      ${hasTrace ? `
+        <span class="error-toggle" onclick="toggleTrace('${traceId}')">▶ Show full traceback</span>
+        <pre class="error-trace" id="${traceId}">${esc(state.error_detail)}</pre>
+      ` : ''}
+      <div class="error-actions">
+        <div class="info-box" style="margin-bottom:0;flex:1">
+          <strong>What to do:</strong> <span>${hint}</span>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="reuploadForJob()">↩ Re-upload Fixed File</button>
+      </div>
+    </div>`;
+  }
+
+  // ── REJECTED CARD ─────────────────────────
+  if (isRejected) {
+    const sr = state.sign_off;
+    html += `<div class="rejected-card">
+      <h3>✗ Review Rejected by ${esc(sr.reviewer_name)} (${esc(sr.reviewer_role)})</h3>
+      ${sr.notes ? `<div style="font-size:13px;color:var(--muted);margin-bottom:4px">Notes: ${esc(sr.notes)}</div>` : ''}
+      <div style="font-size:12px;color:var(--muted)">Reviewed: ${utcDate(sr.review_date).toLocaleString()}</div>
+      <div class="next-steps">
+        <div class="next-step">
+          <div class="next-step-num">1</div>
+          <div class="next-step-content">
+            <strong>Review the flags raised in Step 4</strong>
+            <span>Address each CRITICAL and HIGH severity flag. The verification report is shown below — check recommendations for each flag.</span>
+          </div>
+        </div>
+        <div class="next-step">
+          <div class="next-step-num">2</div>
+          <div class="next-step-content">
+            <strong>Fix the source Informatica mapping</strong>
+            <span>Return to Informatica Designer, address the issues (e.g. remove dead logic, resolve parameters, remove unsupported transformations), and re-export the XML.</span>
+          </div>
+        </div>
+        <div class="next-step">
+          <div class="next-step-num">3</div>
+          <div class="next-step-content">
+            <strong>Start a new job with the corrected file</strong>
+            <span>Use the upload panel on the left to submit the fixed XML. The pipeline will re-run from scratch and produce a fresh verification report.</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <button class="btn btn-warn btn-sm" onclick="reuploadForJob()">↩ Upload Corrected File</button>
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 1 — PARSE REPORT ─────────────────
+  if (state.parse_report) {
+    const pr = state.parse_report;
+    html += `<div class="card">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">🔍</span> Step 1 — Parse Report<span class="card-chevron">▼</span></div>
+      <div class="card-body">
+      <div class="stats">
+        <div class="stat"><div class="stat-val">${Object.values(pr.objects_found||{}).reduce((a,b)=>a+b,0)}</div><div class="stat-label">Objects Found</div></div>
+        <div class="stat"><div class="stat-val">${pr.mapping_names?.length||0}</div><div class="stat-label">Mappings</div></div>
+        <div class="stat"><div class="stat-val">${pr.unresolved_parameters?.length||0}</div><div class="stat-label">Unresolved Params</div></div>
+        <div class="stat"><div class="stat-val" style="font-size:14px;color:${pr.parse_status==='COMPLETE'?'#60a5fa':pr.parse_status==='PARTIAL'?'var(--warn)':'var(--danger)'}">${pr.parse_status==='COMPLETE'?'✓ Parsed':pr.parse_status}</div><div class="stat-label">Parse Status</div></div>
+      </div>
+      ${pr.mapping_names?.length ? `<div style="font-size:12px;color:var(--muted)">Mappings: <strong style="color:var(--text)">${pr.mapping_names.map(esc).join(', ')}</strong></div>` : ''}
+      ${pr.unresolved_parameters?.length ? `<div style="font-size:12px;color:var(--warn);margin-top:8px">⚠️ Unresolved parameters: <code style="background:var(--bg);padding:2px 6px;border-radius:4px">${pr.unresolved_parameters.map(esc).join(', ')}</code></div>` : ''}
+      ${pr.flags?.filter(f=>f.flag_type==='PARSE_ERROR').length ? `<div style="font-size:12px;color:var(--danger);margin-top:8px">Parse errors detected — see full flags in Step 4.</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 2 — COMPLEXITY ───────────────────
+  if (state.complexity) {
+    const c = state.complexity;
+    const tierClass = { 'Low':'tier-low','Medium':'tier-medium','High':'tier-high','Very High':'tier-veryhigh' }[c.tier] || '';
+    html += `<div class="card">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">📊</span> Step 2 — Complexity Classification<span class="card-chevron">▼</span></div>
+      <div class="card-body">
+      <div style="font-size:28px;font-weight:800;margin-bottom:12px" class="${tierClass}">${c.tier}</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:10px">Criteria matched:</div>
+      ${c.criteria_matched?.map(cr=>`<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border)">· ${esc(cr)}</div>`).join('')||''}
+      ${c.rationale ? `<div style="font-size:12px;color:var(--muted);margin-top:10px;font-style:italic">${esc(c.rationale)}</div>` : ''}
+      ${c.special_flags?.length ? `<div style="margin-top:10px;padding:8px;background:rgba(248,113,113,.08);border-radius:6px;font-size:12px;color:var(--danger)">⚠️ ${c.special_flags.map(esc).join('<br/>⚠️ ')}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 2b — SOURCE-TO-TARGET MAPPING ───
+  if (state.s2t && state.s2t.summary) {
+    const s = state.s2t.summary;
+    const hasUnmappedTgt = (s.unmapped_target_fields || 0) > 0;
+    const hasUnmappedSrc = (s.unmapped_source_fields || 0) > 0;
+    const records = state.s2t.records || [];
+    // preview first 8 rows
+    const preview = records.slice(0, 8);
+    const STATUS_COLORS = {
+      'Direct':    '#f0fdf4', 'Derived':   '#fffbeb',
+      'Lookup':    '#faf5ff', 'Filtered':  '#fff7ed',
+      'Aggregated':'#faf5ff', 'Unmapped Target':'#fef2f2',
+      'Unmapped Source':'#fef2f2',
+    };
+    html += `<div class="card" style="border-color:${hasUnmappedTgt?'var(--warn)':'var(--border)'}">
+      <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+        <span><span class="icon">🗺️</span> Source-to-Target Mapping</span>
+        <span style="display:flex;align-items:center;gap:8px">
+          <button onclick="event.stopPropagation();downloadS2T('${job.job_id}')" style="padding:5px 12px;font-size:11px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer">⬇ Download Excel</button>
+          <span class="card-chevron" style="margin-left:0">▼</span>
+        </span>
+      </div>
+      <div class="card-body">
+      <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="stat"><div class="stat-val">${s.total_target_fields||0}</div><div class="stat-label">Target Fields</div></div>
+        <div class="stat"><div class="stat-val" style="color:var(--accent2)">${s.mapped_fields||0}</div><div class="stat-label">Mapped</div></div>
+        <div class="stat"><div class="stat-val" style="color:${hasUnmappedTgt?'var(--danger)':'var(--muted)'}">${s.unmapped_target_fields||0}</div><div class="stat-label">Unmapped Target</div></div>
+        <div class="stat"><div class="stat-val" style="color:${hasUnmappedSrc?'var(--warn)':'var(--muted)'}">${s.unmapped_source_fields||0}</div><div class="stat-label">Unmapped Source</div></div>
+      </div>
+
+      <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;font-size:12px">
+        ${[['Direct','#f0fdf4','direct_mappings'],['Derived','#fffbeb','derived_mappings'],['Lookup','#faf5ff','lookup_enriched'],['Filtered','#fff7ed','filtered_fields']].map(([lbl,col,key])=>`
+          <span style="display:inline-flex;align-items:center;gap:5px">
+            <span style="width:12px;height:12px;border-radius:2px;background:${col};border:1px solid #cbd5e1;display:inline-block"></span>
+            <span>${lbl}: <strong>${s[key]??0}</strong></span>
+          </span>`).join('')}
+      </div>
+
+      ${hasUnmappedTgt ? `<div style="padding:8px 12px;background:rgba(248,113,113,.08);border-radius:6px;font-size:12px;color:var(--danger);margin-bottom:12px">
+        ⚠️ ${s.unmapped_target_fields} target field(s) have no upstream source — see <strong>Unmapped Targets</strong> sheet in Excel.
+      </div>` : ''}
+
+      ${preview.length ? `
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+        <span>PREVIEW — first ${preview.length} of ${records.length} rows</span>
+        ${records.length > 0 ? `<button onclick="openS2TModal()" style="padding:4px 12px;font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-weight:600">🔍 View Full Mapping (${records.length})</button>` : ''}
+      </div>
+      <div style="overflow-x:auto;border-radius:6px;border:1px solid var(--border)">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:#1e293b;color:#f8fafc">
+              ${['Source Table','Source Field','→','Target Table','Target Field','Status','Logic'].map(h=>`<th style="padding:6px 8px;text-align:left;white-space:nowrap;font-weight:600">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${preview.map((r,i)=>`<tr style="background:${i%2===0?(STATUS_COLORS[r.status]||'#fff'):'#f8fafc'}">
+              <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;color:#1e3a8a;font-weight:700">${esc(r.source_table||'—')}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;color:#1e293b;font-weight:600">${esc(r.source_field||'—')}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:center">→</td>
+              <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;color:#14532d;font-weight:700">${esc(r.target_table||'—')}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;color:#1e293b;font-weight:600">${esc(r.target_field||'—')}</td>
+              <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0"><span style="padding:2px 7px;border-radius:4px;background:${STATUS_COLORS[r.status]||'#f1f5f9'};font-size:10px;font-weight:700;color:#1e293b">${esc(r.status||'—')}</span></td>
+              <td style="padding:5px 8px;border-bottom:1px solid #e2e8f0;color:#475569;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.logic||'')}">${esc(r.logic||'—')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ` : '<div style="font-size:13px;color:var(--muted)">No mapped fields found.</div>'}
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 3 — DOCUMENTATION ────────────────
+  if (state.documentation_md) {
+    const truncBanner = state.doc_truncated
+      ? `<div style="margin-bottom:12px;padding:10px 14px;background:rgba(251,146,60,.12);border:1px solid var(--sev-high);border-radius:8px;font-size:12px;color:#fb923c">
+           ⚠️ <strong>Documentation was truncated</strong> — the token limit was reached during generation.
+           One or more sections (field lineage, session context, or ambiguities) may be incomplete.
+           Review carefully before approving at Gate 1. If critical sections are missing, Reject and re-upload.
+         </div>`
+      : '';
+    html += `<div class="card" ${state.doc_truncated ? 'style="border-color:var(--sev-high)"' : ''}>
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">📄</span> Step 3 — Documentation
+        ${state.doc_truncated ? '<span class="badge badge-waiting" style="font-size:10px;background:rgba(251,146,60,.2);color:#fb923c">TRUNCATED</span>' : ''}
+        <span class="card-chevron">▼</span></div>
+      <div class="card-body">
+      ${truncBanner}
+      <div class="doc-content" id="docContent">${markdownToHtml(state.documentation_md)}</div>
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 4 — VERIFICATION ─────────────────
+  if (state.verification) {
+    const v = state.verification;
+    const isBlocked = v.conversion_blocked;
+    // Sort flags: blocking first, then by severity
+    const sortedFlags = [...(v.flags||[])].sort((a,b) => {
+      if (a.blocking !== b.blocking) return a.blocking ? -1 : 1;
+      return (SEV_ORDER[a.severity]??9) - (SEV_ORDER[b.severity]??9);
+    });
+    const critCount = sortedFlags.filter(f=>f.severity==='CRITICAL'||f.blocking).length;
+    const highCount = sortedFlags.filter(f=>f.severity==='HIGH'&&!f.blocking).length;
+
+    html += `<div class="card" style="border-color:${isBlocked?'var(--danger)':v.overall_status==='APPROVED_FOR_CONVERSION'?'var(--accent2)':'var(--warn)'}">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">✅</span> Step 4 — Verification Report
+        <span class="badge ${isBlocked?'badge-blocked':v.overall_status==='APPROVED_FOR_CONVERSION'?'badge-complete':'badge-waiting'}" style="font-size:10px">${v.overall_status?.replace(/_/g,' ')}</span>
+        <span class="card-chevron">▼</span>
+      </div>
+      <div class="card-body">
+      <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="stat"><div class="stat-val">${v.total_checks}</div><div class="stat-label">Total Checks</div></div>
+        <div class="stat"><div class="stat-val" style="color:var(--accent2)">${v.total_passed}</div><div class="stat-label">Passed</div></div>
+        <div class="stat"><div class="stat-val" style="color:var(--danger)">${v.total_failed}</div><div class="stat-label">Failed</div></div>
+        <div class="stat"><div class="stat-val" style="color:var(--warn)">${v.total_flags}</div><div class="stat-label">Flags</div></div>
+      </div>
+
+      ${critCount > 0 ? `<div style="padding:10px 14px;background:rgba(248,113,113,.1);border-radius:8px;font-size:13px;color:var(--danger);margin-bottom:12px;font-weight:600">
+        🚫 ${critCount} CRITICAL / BLOCKING issue${critCount>1?'s':''} — conversion cannot proceed until resolved
+      </div>` : ''}
+
+      ${sortedFlags.length ? `
+        <div style="font-size:12px;font-weight:700;margin-bottom:10px;color:var(--muted)">FLAGS <span style="font-weight:400;color:var(--muted)">(sorted by severity — most critical first)</span></div>
+        <div class="flag-list">
+          ${sortedFlags.map(f => renderFlag(f)).join('')}
+        </div>` : '<div style="color:var(--accent2);font-size:13px">✓ No flags raised</div>'}
+
+      ${renderFailedChecks(v)}
+
+      <div style="margin-top:14px;padding:10px 14px;background:var(--surface2);border-radius:8px;font-size:12px;color:var(--muted)">
+        Recommendation: <strong style="color:var(--text)">${esc(v.recommendation)}</strong>
+      </div>
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 5 — HUMAN SIGN-OFF GATE ──────────
+  if (job.status === 'awaiting_review') {
+    const v = state.verification || {};
+    const flags = v.flags || [];
+    const sortedFlags = [...flags].sort((a,b) => {
+      if (a.blocking !== b.blocking) return a.blocking ? -1 : 1;
+      return (SEV_ORDER[a.severity]??9) - (SEV_ORDER[b.severity]??9);
+    });
+    html += `<div class="card" style="border-color:var(--accent)">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">👤</span> Step 5 — Human Review & Sign-off<span class="card-chevron">▼</span></div>
+      <div class="card-body">
+      <p style="font-size:13px;color:var(--muted);margin-bottom:16px">
+        Review the Verification Report above. Each flag is sorted by severity.
+        For each flag: either resolve the issue or accept it with a documented rationale.
+        Your decision is recorded as part of the audit trail.
+      </p>
+      ${sortedFlags.length ? `
+        <div style="font-size:12px;font-weight:700;margin-bottom:10px;color:var(--muted)">FLAG RESOLUTIONS</div>
+        <div id="flagResolutions" style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+          ${sortedFlags.map((f,i)=>`
+            <div style="background:var(--surface2);border-radius:8px;padding:12px;font-size:12px;border-left:3px solid var(--sev-${(f.severity||'medium').toLowerCase()})">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                <span class="sev-badge ${f.severity||'MEDIUM'}">${f.severity||'MEDIUM'}</span>
+                ${f.blocking ? '<span class="flag-blocking-pill">BLOCKING</span>' : ''}
+                <strong>${esc(f.flag_type)}</strong>
+              </div>
+              <div style="color:var(--muted);font-size:11px;margin-bottom:4px">📍 ${esc(f.location)}</div>
+              <div style="margin-bottom:8px">${esc(f.description)}</div>
+              ${f.recommendation ? `<div style="font-size:11px;color:#a5b4fc;padding:6px 8px;background:rgba(108,99,255,.07);border-radius:4px;margin-bottom:8px">💡 ${esc(f.recommendation)}</div>` : ''}
+              ${f.auto_fix_suggestion ? `
+              <div style="margin-bottom:10px;border:1px solid rgba(74,222,128,.35);border-radius:6px;overflow:hidden">
+                <div style="background:rgba(74,222,128,.1);padding:6px 10px;font-size:11px;font-weight:600;color:#4ade80;display:flex;align-items:center;gap:6px">
+                  🔧 Suggested Auto-Fix
+                </div>
+                <div style="padding:8px 10px;font-size:12px;color:var(--text);line-height:1.6;font-style:italic">${esc(f.auto_fix_suggestion)}</div>
+                <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:rgba(74,222,128,.06);cursor:pointer;border-top:1px solid rgba(74,222,128,.2)">
+                  <input type="checkbox" id="flag_apply_fix_${i}" style="width:15px;height:15px;accent-color:#4ade80;cursor:pointer;flex-shrink:0" />
+                  <span style="font-size:12px;color:#4ade80;font-weight:500">Apply this fix during code generation (Step 7)</span>
+                </label>
+              </div>` : ''}
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="flag_action_${i}" style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px;color:var(--text);font-size:12px">
+                  <option value="accepted">Accept (document rationale)</option>
+                  <option value="resolved">Resolved (describe what was fixed)</option>
+                </select>
+              </div>
+              <textarea id="flag_note_${i}" placeholder="Rationale or resolution description…" style="width:100%;margin-top:8px;height:60px;resize:vertical;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px;color:var(--text);font-size:12px"></textarea>
+            </div>`).join('')}
+        </div>` : ''}
+      <!-- Manifest re-upload -->
+      <div style="background:rgba(192,112,0,.07);border:1px solid rgba(192,112,0,.35);border-radius:8px;padding:14px;margin-bottom:16px">
+        <div style="font-size:12px;font-weight:700;color:#c07000;margin-bottom:6px">📊 MANIFEST OVERRIDES <span style="font-weight:400;color:var(--muted)">(optional)</span></div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+          Download the manifest, fill in the <strong style="color:var(--text)">Reviewer Override</strong> column for any red (LOW/UNMAPPED) rows, then upload the annotated file here.
+          The conversion agent will treat your corrections as ground truth — resolving lineage gaps before generating code.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label id="manifestUploadLabel" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;color:var(--text)">
+            📁 Choose annotated manifest…
+            <input type="file" id="manifestFileInput" accept=".xlsx" style="display:none" onchange="handleManifestFileChosen(this, '${job.job_id}')"/>
+          </label>
+          <button id="manifestUploadBtn" class="btn btn-ghost btn-sm" style="color:#c07000;border-color:#c07000;display:none" onclick="uploadManifest('${job.job_id}')">⬆ Upload Overrides</button>
+          <span id="manifestUploadStatus" style="font-size:12px"></span>
+        </div>
+      </div>
+
+      <div class="signoff-form">
+        <div class="form-group">
+          <label>Reviewer Name</label>
+          <input type="text" id="reviewerName" placeholder="Your full name"/>
+        </div>
+        <div class="form-group">
+          <label>Reviewer Role</label>
+          <select id="reviewerRole">
+            <option>Data Engineer</option>
+            <option>Senior Data Engineer</option>
+            <option>Business Analyst</option>
+            <option>Subject Matter Expert</option>
+            <option>Architect</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Notes (optional)</label>
+          <textarea id="reviewNotes" placeholder="Any conditions, caveats, or observations…" style="height:80px;resize:vertical"></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-success" onclick="submitSignoff('${job.job_id}', 'APPROVED', ${JSON.stringify(sortedFlags).replace(/"/g,'&quot;')})">✓ Approve — Proceed to Conversion</button>
+          <button class="btn btn-danger"  onclick="submitSignoff('${job.job_id}', 'REJECTED', [])">✗ Reject — Needs Remediation</button>
+        </div>
+      </div>
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 5 completed sign-off summary ─────
+  if (state.sign_off && job.status !== 'awaiting_review') {
+    const sr = state.sign_off;
+    const isApproved = sr.decision === 'APPROVED';
+    // Collect all applied fixes for display
+    const appliedFixes = [...(sr.flags_accepted||[]), ...(sr.flags_resolved||[])]
+      .filter(r => r.apply_fix && r.fix_suggestion);
+    html += `<div class="card" style="border-color:${isApproved?'var(--accent2)':'var(--danger)'}">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">${isApproved?'✅':'❌'}</span> Step 5 — Sign-off Record<span class="card-chevron">▼</span></div>
+      <div class="card-body">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px">
+        <span>Reviewer: <strong>${esc(sr.reviewer_name)}</strong> (${esc(sr.reviewer_role)})</span>
+        <span>Decision: <strong style="color:${isApproved?'var(--accent2)':'var(--danger)'}">${sr.decision}</strong></span>
+        <span>Date: ${utcDate(sr.review_date).toLocaleString()}</span>
+        ${appliedFixes.length ? `<span style="color:#4ade80;font-weight:600">🔧 ${appliedFixes.length} fix${appliedFixes.length>1?'es':''} applied to Step 7</span>` : ''}
+      </div>
+      ${sr.notes ? `<div style="font-size:12px;color:var(--muted);margin-top:8px;padding:8px;background:var(--surface2);border-radius:6px">Notes: ${esc(sr.notes)}</div>` : ''}
+      ${appliedFixes.length ? `
+      <div style="margin-top:10px">
+        <div style="font-size:11px;font-weight:600;color:#4ade80;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">🔧 Fixes Injected into Code Generation</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${appliedFixes.map((r,i) => `
+          <div style="background:rgba(74,222,128,.07);border:1px solid rgba(74,222,128,.2);border-radius:6px;padding:8px 10px;font-size:12px">
+            <span style="color:var(--muted);margin-right:6px">${i+1}.</span>${esc(r.fix_suggestion)}
+          </div>`).join('')}
+        </div>
+      </div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 6 — STACK ASSIGNMENT ─────────────
+  if (state.stack_assignment) {
+    const sa = state.stack_assignment;
+    html += `<div class="card">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">🎯</span> Step 6 — Stack Assignment<span class="card-chevron">▼</span></div>
+      <div class="card-body">
+      <div style="font-size:28px;font-weight:800;color:var(--accent);margin-bottom:12px">${esc(sa.assigned_stack)}</div>
+      <div style="font-size:13px;margin-bottom:10px;line-height:1.6">${esc(sa.rationale)}</div>
+      ${sa.data_volume_est ? `<div style="font-size:12px;color:var(--muted)">Estimated data volume: ${esc(sa.data_volume_est)}</div>` : ''}
+      ${sa.special_concerns?.length ? `<div style="font-size:12px;color:var(--warn);margin-top:10px">⚠️ ${sa.special_concerns.map(esc).join('<br/>⚠️ ')}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 7 — CONVERTED CODE ───────────────
+  if (state.conversion) {
+    const co = state.conversion;
+    const fileNames = Object.keys(co.files || {});
+    const firstFile = fileNames[0] || '';
+
+    const fileIcon = (name) => {
+      if (name.endsWith('.py'))  return '🐍';
+      if (name.endsWith('.sql')) return '🗄️';
+      if (name.endsWith('.yml') || name.endsWith('.yaml')) return '📋';
+      if (name.endsWith('.md'))  return '📄';
+      return '📁';
+    };
+    const fileType = (name) => {
+      if (name.endsWith('.py'))  return 'Python';
+      if (name.endsWith('.sql')) return 'SQL';
+      if (name.endsWith('.yml') || name.endsWith('.yaml')) return 'YAML';
+      return name.split('.').pop()?.toUpperCase() || 'File';
+    };
+
+    const convDegraded = co.parse_ok === false;
+    html += `<div class="card" style="border-color:${convDegraded ? 'var(--warn)' : 'var(--accent2)'}">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">💻</span> Step 7 — Converted Code <span style="color:var(--accent)">(${esc(co.target_stack)})</span>
+        <span style="margin-left:auto;display:flex;align-items:center;gap:6px">
+          <span class="badge ${convDegraded ? 'badge-waiting' : 'badge-complete'}" style="font-size:10px">${fileNames.length} file${fileNames.length!==1?'s':''}</span>
+          <span class="card-chevron" style="margin-left:0">▼</span>
+        </span>
+      </div>
+      <div class="card-body">
+      ${convDegraded ? `<div style="padding:10px 14px;background:rgba(251,191,36,.12);border:1px solid var(--warn);border-radius:8px;margin-bottom:14px">
+        <div style="font-size:13px;font-weight:700;color:var(--warn);margin-bottom:4px">⚠️ Conversion Output Degraded</div>
+        <div style="font-size:12px;color:var(--text)">The response JSON could not be parsed cleanly — files below may be partial or truncated.
+        <strong>Review each file carefully before use.</strong> Re-running the job may produce a cleaner result.</div>
+      </div>` : ''}
+
+      ${co.notes?.length ? `<div style="margin-bottom:14px">${co.notes.map(n=>`<div style="font-size:12px;color:var(--warn);margin-bottom:4px">⚠️ ${esc(n)}</div>`).join('')}</div>` : ''}
+
+      <!-- File cards grid -->
+      <div class="output-files">
+        ${fileNames.map(f=>`<div class="output-file-card" onclick="showFileInViewer('${esc(f)}', ${JSON.stringify(co.files).replace(/"/g,'&quot;')})">
+          <div class="output-file-icon">${fileIcon(f)}</div>
+          <div class="output-file-name">${esc(f)}</div>
+          <div class="output-file-type">${fileType(f)}</div>
+        </div>`).join('')}
+      </div>
+
+      <!-- Code viewer -->
+      <div class="code-tabs" id="codeTabs">
+        ${fileNames.map((f,i)=>`<div class="code-tab ${i===0?'active':''}" id="tab_${i}" onclick="showCodeTab('${esc(f)}', this, ${JSON.stringify(co.files).replace(/"/g,'&quot;')})">${esc(f)}</div>`).join('')}
+      </div>
+      <pre class="code-block" id="codeBlock">${escHtml(co.files[firstFile]||'')}</pre>
+
+      <!-- Download buttons -->
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <span style="font-size:12px;color:var(--muted)">Download:</span>
+        <button class="btn btn-sm" style="background:var(--accent);color:#fff;border:none;font-weight:600" onclick="downloadOutputZip('${job.job_id}')" title="Download all output files as a ZIP archive">⬇ Download ZIP</button>
+        ${fileNames.map(f=>`<button class="btn btn-ghost btn-sm" onclick="downloadCode('${job.job_id}','${esc(f)}')">${fileIcon(f)} ${esc(f)}</button>`).join('')}
+      </div>
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 8 — SECURITY SCAN ───────────────
+  if (state.security_scan) {
+    const ss = state.security_scan;
+    const ssRecColor = { APPROVED:'var(--accent2)', REVIEW_RECOMMENDED:'var(--warn)', REQUIRES_FIXES:'var(--danger)' }[ss.recommendation] || 'var(--muted)';
+    const ssRecBadge = { APPROVED:'badge-complete', REVIEW_RECOMMENDED:'badge-waiting', REQUIRES_FIXES:'badge-blocked' }[ss.recommendation] || 'badge-pending';
+    const ssRecIcon  = { APPROVED:'✅', REVIEW_RECOMMENDED:'⚠️', REQUIRES_FIXES:'❌' }[ss.recommendation] || '❓';
+    const ssFindings = (ss.findings||[]).sort((a,b) => ({ CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3 }[a.severity]??9) - ({ CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3 }[b.severity]??9));
+    const ssHasFindings = ssFindings.length > 0;
+    const ssSevColor = { CRITICAL:'var(--danger)', HIGH:'#f97316', MEDIUM:'var(--warn)', LOW:'#60a5fa' };
+
+    html += `<div class="card" style="border-color:${ssRecColor}">
+      <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+        <span><span class="icon">🛡️</span> Step 8 — Security Scan</span>
+        <span style="display:flex;align-items:center;gap:8px">
+          <span class="badge ${ssRecBadge}" style="font-size:11px">${ssRecIcon} ${(ss.recommendation||'').replace(/_/g,' ')}</span>
+          <span class="card-chevron" style="margin-left:0">▼</span>
+        </span>
+      </div>
+      <div class="card-body">
+      <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="stat"><div class="stat-val" style="color:${(ss.critical_count||0)>0?'var(--danger)':'var(--accent2)'}">${ss.critical_count||0}</div><div class="stat-label">Critical</div></div>
+        <div class="stat"><div class="stat-val" style="color:${(ss.high_count||0)>0?'#f97316':'var(--accent2)'}">${ss.high_count||0}</div><div class="stat-label">High</div></div>
+        <div class="stat"><div class="stat-val" style="color:${(ss.medium_count||0)>0?'var(--warn)':'var(--accent2)'}">${ss.medium_count||0}</div><div class="stat-label">Medium</div></div>
+        <div class="stat"><div class="stat-val">${ss.low_count||0}</div><div class="stat-label">Low</div></div>
+      </div>
+
+      ${ss.ran_bandit ? `<div style="font-size:11px;color:var(--muted);margin-bottom:10px">🔎 bandit static analysis ran &nbsp;·&nbsp; YAML regex scan ran &nbsp;·&nbsp; Claude review ran</div>` :
+                        `<div style="font-size:11px;color:var(--warn);margin-bottom:10px">⚠️ bandit not available — Claude + YAML regex scan ran</div>`}
+
+      ${ss.bandit_error ? `<div style="font-size:12px;color:var(--warn);margin-bottom:10px">bandit error: ${esc(ss.bandit_error)}</div>` : ''}
+
+      ${ss.claude_summary ? `<div style="padding:10px 14px;background:var(--surface2);border-radius:8px;font-size:13px;margin-bottom:14px;line-height:1.6">${esc(ss.claude_summary)}</div>` : ''}
+
+      ${ssHasFindings ? `
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px">FINDINGS (${ssFindings.length})</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${ssFindings.map(f => {
+          const sc = ssSevColor[f.severity] || 'var(--muted)';
+          const srcTag = f.source === 'bandit' ? '🔎 bandit' : f.source === 'yaml_scan' ? '📋 yaml' : '🤖 claude';
+          return `<div style="padding:10px 12px;background:rgba(248,113,113,.05);border-radius:8px;border-left:3px solid ${sc}">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+              <span style="font-size:10px;font-weight:800;color:${sc}">${esc(f.severity)}</span>
+              <span style="font-size:11px;font-weight:600;color:var(--text)">${esc(f.test_name||f.test_id||'')}</span>
+              <span style="margin-left:auto;font-size:10px;color:var(--muted)">${srcTag}</span>
+            </div>
+            ${f.filename ? `<div style="font-size:11px;color:var(--muted);margin-bottom:3px">📄 ${esc(f.filename)}${f.line ? ` line ${f.line}` : ''}</div>` : ''}
+            <div style="font-size:12px;color:var(--text)">${esc(f.text||'')}</div>
+            ${f.code ? `<pre style="margin-top:6px;background:#0a0a0a;border-radius:4px;padding:6px 8px;font-size:11px;color:#fca5a5;white-space:pre-wrap;word-break:break-all;max-height:80px;overflow-y:auto">${escHtml(f.code)}</pre>` : ''}
+            ${f.remediation ? `<div style="margin-top:8px;padding:7px 10px;background:rgba(74,222,128,.07);border-radius:6px;border-left:2px solid var(--accent2);font-size:11px;line-height:1.55;color:var(--text)"><span style="font-weight:700;color:var(--accent2)">🔧 How to fix:&nbsp;</span>${esc(f.remediation)}</div>` : ''}
+          </div>`;
+        }).join('')}
+      </div>` : `<div style="color:var(--accent2);font-size:13px">✅ No security findings detected.</div>`}
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 9 — SECURITY REVIEW GATE ───────────────
+  // Compute signedOff before the outer condition.
+  // REQUEST_FIX is an intermediate decision — the card is hidden while the
+  // regen/rescan pipeline is running and only re-appears when status returns
+  // to awaiting_security_review.
+  const srd         = state.security_sign_off || {};
+  const srdDecision = srd.decision || '';
+  const signedOff   = !!state.security_sign_off && srdDecision !== 'REQUEST_FIX';
+  if (job.status === 'awaiting_security_review' || signedOff) {
+    const srdDecColor = { APPROVED:'var(--accent2)', ACKNOWLEDGED:'var(--warn)', FAILED:'var(--danger)' }[srdDecision] || 'var(--muted)';
+
+    if (signedOff) {
+      const srdIcon = { APPROVED:'✅', ACKNOWLEDGED:'⚠️', FAILED:'❌' }[srdDecision] || '❓';
+      html += `<div class="card" style="border-color:${srdDecColor}">
+        <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+          <span><span class="icon">🔐</span> Step 9 — Security Review</span>
+          <span style="display:flex;align-items:center;gap:8px">
+            <span class="badge ${{ APPROVED:'badge-complete', ACKNOWLEDGED:'badge-waiting', FAILED:'badge-blocked' }[srdDecision]||'badge-pending'}" style="font-size:11px">${srdIcon} ${srdDecision}</span>
+            <span class="card-chevron" style="margin-left:0">▼</span>
+          </span>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;gap:24px;font-size:13px;margin-bottom:10px">
+            <div><span style="color:var(--muted)">Reviewer:</span> <strong>${esc(srd.reviewer_name||'')}</strong></div>
+            <div><span style="color:var(--muted)">Role:</span> ${esc(srd.reviewer_role||'')}</div>
+            <div><span style="color:var(--muted)">Date:</span> ${(srd.review_date||'').slice(0,10)}</div>
+          </div>
+          ${srd.notes ? `<div style="font-size:13px;color:var(--muted);padding:8px 12px;background:var(--surface2);border-radius:6px">${esc(srd.notes)}</div>` : ''}
+        </div>
+      </div>`;
+    } else {
+      // Awaiting security review — show decision form
+      const recLabel = (state.security_scan?.recommendation||'REVIEW_RECOMMENDED').replace(/_/g,' ');
+      const remRound    = state.remediation_round || 0;
+      // canFixAgain: backend sets can_request_fix=false when max rounds reached,
+      // frontend also enforces the < 2 cap as a safety net (MAX_REMEDIATION_ROUNDS=2)
+      const canFixAgain = state.can_request_fix !== false && remRound < 2;
+      // Build fix-round comparison if we have history
+      let roundDiffHtml = '';
+      if (remRound > 0 && state.security_scan_rounds?.length) {
+        const prevScan    = state.security_scan_rounds[state.security_scan_rounds.length - 1];
+        const prevFindings = prevScan?.findings || [];
+        const currFindings = state.security_scan?.findings || [];
+        // Key a finding by test_name+filename for matching
+        const key = f => `${f.test_name||f.test_id||''}|${f.filename||''}`;
+        const prevKeys = new Set(prevFindings.map(key));
+        const currKeys = new Set(currFindings.map(key));
+        const fixed   = prevFindings.filter(f => !currKeys.has(key(f)));
+        const newOnes = currFindings.filter(f => !prevKeys.has(key(f)));
+        const remain  = currFindings.filter(f =>  prevKeys.has(key(f)));
+        const diffRows = [
+          ...fixed.map(f   => `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)"><span style="color:#22c55e;font-size:11px;min-width:70px">✅ Fixed</span><span style="font-size:12px;color:var(--muted)">${esc(f.test_name||f.test_id||'')} — ${esc(f.filename||'')}</span></div>`),
+          ...remain.map(f  => `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)"><span style="color:#f59e0b;font-size:11px;min-width:70px">⚠️ Remains</span><span style="font-size:12px;color:var(--muted)">${esc(f.test_name||f.test_id||'')} — ${esc(f.filename||'')}</span></div>`),
+          ...newOnes.map(f => `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)"><span style="color:#f87171;font-size:11px;min-width:70px">🆕 New</span><span style="font-size:12px;color:var(--muted)">${esc(f.test_name||f.test_id||'')} — ${esc(f.filename||'')}</span></div>`),
+        ].join('');
+        roundDiffHtml = `
+          <div style="margin-bottom:12px;padding:10px 12px;background:rgba(255,255,255,.03);border-radius:6px;border:1px solid rgba(255,255,255,.08)">
+            <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px">
+              Fix Round ${remRound} — Changes from previous scan
+              <span style="margin-left:12px;color:#22c55e">${fixed.length} fixed</span>
+              <span style="margin-left:8px;color:#f59e0b">${remain.length} remaining</span>
+              ${newOnes.length ? `<span style="margin-left:8px;color:#f87171">${newOnes.length} new</span>` : ''}
+            </div>
+            ${diffRows || '<div style="font-size:12px;color:var(--muted)">No comparable findings.</div>'}
+          </div>`;
+      }
+
+      const roundNote   = remRound > 0
+        ? `<div style="font-size:12px;color:var(--warn);margin-bottom:10px;padding:8px 12px;background:rgba(234,179,8,.08);border-radius:6px;border-left:3px solid var(--warn)">
+             🔄 Fix round ${remRound} of 2 — code was regenerated with security findings as context and re-scanned.
+             ${canFixAgain ? 'One more fix round available.' : '<strong>No further fix rounds — choose Approve, Acknowledge, or Fail.</strong>'}
+           </div>${roundDiffHtml}` : '';
+      html += `<div class="card" style="border-color:var(--warn)">
+        <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+          <span><span class="icon">🔐</span> Step 9 — Security Review <span style="font-size:11px;color:var(--warn);margin-left:8px">⏳ AWAITING YOUR DECISION</span></span>
+          <span class="card-chevron" style="margin-left:0">▼</span>
+        </div>
+        <div class="card-body">
+          ${roundNote}
+          <div style="font-size:13px;color:var(--text);margin-bottom:16px;padding:12px;background:rgba(234,179,8,.07);border-radius:8px;border:1px solid rgba(234,179,8,.25)">
+            The automated security scan returned <strong>${esc(recLabel)}</strong>. Review the findings in Step 8 above and choose an action below.
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6;padding:10px 12px;background:rgba(255,255,255,.03);border-radius:6px;border:1px solid rgba(255,255,255,.06)">
+            <strong style="color:var(--text)">🔧 Request Fix</strong> — regenerates the code with all findings as mandatory fix requirements, then re-scans (max 2 rounds).<br>
+            <strong style="color:var(--text)">✅ Approve</strong> — findings reviewed; accept and proceed to code review.<br>
+            <strong style="color:var(--text)">⚠️ Acknowledge</strong> — known risk accepted with notes; proceed to code review.<br>
+            <strong style="color:var(--text)">❌ Fail</strong> — unacceptable findings; block pipeline permanently.
+          </div>
+          <div class="form-row">
+            <label class="form-label">Your Name</label>
+            <input id="secReviewerName" class="form-input" placeholder="Reviewer name" />
+          </div>
+          <div class="form-row">
+            <label class="form-label">Role</label>
+            <select id="secReviewerRole" class="form-input">
+              <option value="Security Engineer">Security Engineer</option>
+              <option value="Lead Developer">Lead Developer</option>
+              <option value="Tech Lead">Tech Lead</option>
+              <option value="Architect">Architect</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Notes (optional)</label>
+            <textarea id="secReviewNotes" class="form-input" rows="2" placeholder="Any notes on the decision…"></textarea>
+          </div>
+          <div class="form-actions" style="display:flex;gap:10px;flex-wrap:wrap">
+            ${canFixAgain ? `<button class="btn" style="background:var(--accent2);color:#000;font-weight:700" onclick="event.stopPropagation();submitSecurityReview('${job.job_id}','REQUEST_FIX')">🔧 Request Fix &amp; Re-scan</button>` : ''}
+            <button class="btn btn-success" onclick="event.stopPropagation();submitSecurityReview('${job.job_id}','APPROVED')">✅ Approve — Proceed</button>
+            <button class="btn btn-warning" onclick="event.stopPropagation();submitSecurityReview('${job.job_id}','ACKNOWLEDGED')" style="background:var(--warn);color:#000">⚠️ Acknowledge &amp; Proceed</button>
+            <button class="btn btn-danger"  onclick="event.stopPropagation();submitSecurityReview('${job.job_id}','FAILED')">❌ Fail — Block Pipeline</button>
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+
+  // ── STEP 10 — CODE QUALITY REVIEW ───────────────
+  if (state.code_review) {
+    const cr = state.code_review;
+    const recColor = { APPROVED: 'var(--accent2)', REVIEW_RECOMMENDED: 'var(--warn)', REQUIRES_FIXES: 'var(--danger)' }[cr.recommendation] || 'var(--muted)';
+    const recBadge = { APPROVED: 'badge-complete', REVIEW_RECOMMENDED: 'badge-waiting', REQUIRES_FIXES: 'badge-blocked' }[cr.recommendation] || 'badge-pending';
+    const recIcon  = { APPROVED: '✅', REVIEW_RECOMMENDED: '⚠️', REQUIRES_FIXES: '❌' }[cr.recommendation] || '❓';
+    const SEV_ORDER_CR = { CRITICAL:0, HIGH:1, MEDIUM:2, LOW:3 };
+    const sortedChecks = [...(cr.checks||[])].sort((a,b) => {
+      if (a.passed !== b.passed) return a.passed ? 1 : -1;  // failed first
+      return (SEV_ORDER_CR[a.severity]??9) - (SEV_ORDER_CR[b.severity]??9);
+    });
+
+    html += `<div class="card" style="border-color:${recColor}">
+      <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+        <span><span class="icon">🔬</span> Step 10 — Code Quality Review</span>
+        <span style="display:flex;align-items:center;gap:8px">
+          <span class="badge ${recBadge}" style="font-size:11px">${recIcon} ${cr.recommendation?.replace(/_/g,' ')}</span>
+          <span class="card-chevron" style="margin-left:0">▼</span>
+        </span>
+      </div>
+      <div class="card-body">
+      <div class="stats" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+        <div class="stat"><div class="stat-val">${(cr.checks||[]).length}</div><div class="stat-label">Checks Run</div></div>
+        <div class="stat"><div class="stat-val" style="color:var(--accent2)">${cr.total_passed}</div><div class="stat-label">Passed</div></div>
+        <div class="stat"><div class="stat-val" style="color:${cr.total_failed>0?'var(--danger)':'var(--accent2)'}">${cr.total_failed}</div><div class="stat-label">Failed</div></div>
+      </div>
+
+      ${cr.parse_degraded ? `<div style="padding:8px 12px;background:rgba(251,191,36,.1);border-radius:6px;font-size:12px;color:var(--warn);margin-bottom:12px">
+        ⚠️ Review based on partially-recovered code — some checks may be incomplete due to truncated output in Step 7.
+      </div>` : ''}
+
+      ${cr.summary ? `<div style="padding:10px 14px;background:var(--surface2);border-radius:8px;font-size:13px;margin-bottom:14px;line-height:1.6">
+        ${esc(cr.summary)}
+      </div>` : ''}
+
+      ${(() => {
+        const eq = cr.equivalence_report;
+        if (!eq) return '';
+        const total = eq.total_verified + eq.total_needs_review + eq.total_mismatches;
+        if (total === 0 && !eq.summary) return '';
+        const hasMismatches = eq.total_mismatches > 0;
+        const borderCol = hasMismatches ? 'var(--danger)' : eq.total_needs_review > 0 ? 'var(--warn)' : 'var(--accent2)';
+        const VERDICT_ICON   = { VERIFIED:'✅', NEEDS_REVIEW:'⚠️', MISMATCH:'❌' };
+        const VERDICT_COLOR  = { VERIFIED:'var(--accent2)', NEEDS_REVIEW:'var(--warn)', MISMATCH:'var(--danger)' };
+        const VERDICT_BG     = { VERIFIED:'rgba(34,197,94,.04)', NEEDS_REVIEW:'rgba(251,191,36,.07)', MISMATCH:'rgba(248,113,113,.08)' };
+        const RULE_ICON      = { FIELD:'📋', EXPRESSION:'🔣', FILTER:'🔽', JOIN:'🔗', NULL_HANDLING:'⬜', CHAIN:'⛓️' };
+        const mismatchRows   = (eq.checks||[]).filter(c => c.verdict === 'MISMATCH');
+        const needsRevRows   = (eq.checks||[]).filter(c => c.verdict === 'NEEDS_REVIEW');
+        const verifiedRows   = (eq.checks||[]).filter(c => c.verdict === 'VERIFIED');
+        const orderedChecks  = [...mismatchRows, ...needsRevRows, ...verifiedRows];
+        return `
+        <div style="margin-bottom:14px;border:1px solid ${borderCol};border-radius:8px;overflow:hidden">
+          <div style="padding:10px 14px;background:${hasMismatches?'rgba(248,113,113,.07)':eq.total_needs_review>0?'rgba(251,191,36,.06)':'rgba(34,197,94,.05)'};display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.05em">LOGIC EQUIVALENCE CHECK</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:10px;background:rgba(34,197,94,.12);color:var(--accent2);font-weight:600">${eq.total_verified} VERIFIED</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:10px;background:rgba(251,191,36,.15);color:var(--warn);font-weight:600">${eq.total_needs_review} NEEDS REVIEW</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:10px;background:rgba(248,113,113,.15);color:var(--danger);font-weight:600">${eq.total_mismatches} MISMATCHES</span>
+            <span style="font-size:11px;color:var(--muted);margin-left:auto">${eq.coverage_pct}% coverage</span>
+          </div>
+          ${eq.summary ? `<div style="padding:8px 14px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border)">${esc(eq.summary)}</div>` : ''}
+          ${orderedChecks.length ? `<div style="padding:8px;display:flex;flex-direction:column;gap:4px">
+            ${orderedChecks.map(c => `
+            <div style="display:flex;gap:8px;align-items:flex-start;padding:7px 10px;background:${VERDICT_BG[c.verdict]||'transparent'};border-radius:6px;border-left:3px solid ${VERDICT_COLOR[c.verdict]||'var(--muted)'}">
+              <span style="font-size:13px;flex-shrink:0">${VERDICT_ICON[c.verdict]||'?'}</span>
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">
+                  <span style="font-size:10px;font-weight:700;color:var(--muted)">${RULE_ICON[c.rule_type]||''} ${esc(c.rule_type)}</span>
+                  <span style="font-size:12px;font-weight:600">${esc(c.rule_id)}</span>
+                </div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:2px"><strong>XML:</strong> ${esc(c.xml_rule)}</div>
+                <div style="font-size:11px;color:var(--muted);margin-bottom:${c.note?'2px':'0'}"><strong>Code:</strong> ${esc(c.generated_impl)}</div>
+                ${c.note ? `<div style="font-size:11px;color:${VERDICT_COLOR[c.verdict]||'var(--muted)'}">${esc(c.note)}</div>` : ''}
+              </div>
+            </div>`).join('')}
+          </div>` : ''}
+        </div>`;
+      })()}
+
+      ${sortedChecks.length ? `
+      <div style="font-size:12px;font-weight:700;color:var(--muted);margin-bottom:8px">CODE QUALITY CHECKS</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${sortedChecks.map(c => {
+          const sevCols = { CRITICAL:'var(--danger)', HIGH:'#f97316', MEDIUM:'var(--warn)', LOW:'var(--muted)' };
+          const sc = sevCols[c.severity] || 'var(--muted)';
+          return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;background:${c.passed?'rgba(34,197,94,.04)':'rgba(248,113,113,.06)'};border-radius:6px;border-left:3px solid ${c.passed?'var(--accent2)':sc}">
+            <span style="font-size:14px;flex-shrink:0">${c.passed?'✅':'✗'}</span>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:600;margin-bottom:2px;display:flex;gap:6px;align-items:center">
+                ${esc(c.name.replace(/_/g,' '))}
+                ${!c.passed ? `<span style="font-size:10px;font-weight:700;color:${sc}">${esc(c.severity)}</span>` : ''}
+              </div>
+              ${c.note ? `<div style="font-size:11px;color:var(--muted)">${esc(c.note)}</div>` : ''}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>` : ''}
+      </div>
+    </div>`;
+  } else if (state.reconciliation) {
+    // Legacy placeholder (old jobs)
+    html += `<div class="card">
+      <div class="card-title" onclick="toggleCard(this)"><span class="icon">🔬</span> Step 10 — Code Quality Review<span class="card-chevron">▼</span></div>
+      <div class="card-body">
+      <div style="font-size:13px;color:var(--muted)">This job was run before Step 10 was implemented. Re-run to get a full code review.</div>
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 11 — TEST GENERATION & COVERAGE ───────────────────
+  if (state.test_report) {
+    const tr = state.test_report;
+    const pct = tr.coverage_pct ?? 0;
+    const pctColor = pct >= 90 ? 'var(--accent2)' : pct >= 70 ? 'var(--warn)' : 'var(--danger)';
+    const pctBadge = pct >= 90 ? 'badge-complete' : pct >= 70 ? 'badge-waiting' : 'badge-blocked';
+    const testFileNames = Object.keys(tr.test_files || {});
+    const missingFields = tr.missing_fields || [];
+
+    html += `<div class="card" style="border-color:${pctColor}">
+      <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+        <span><span class="icon">🧪</span> Step 11 — Test Generation &amp; Coverage Check</span>
+        <span style="display:flex;align-items:center;gap:8px">
+          <span class="badge ${pctBadge}" style="font-size:11px">${pct}% Field Coverage</span>
+          <span class="card-chevron" style="margin-left:0">▼</span>
+        </span>
+      </div>
+      <div class="card-body">
+
+        <!-- Summary row -->
+        <div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:16px">
+          <div style="background:var(--surface-alt);border-radius:8px;padding:10px 18px;text-align:center">
+            <div style="font-size:22px;font-weight:700;color:${pctColor}">${pct}%</div>
+            <div style="font-size:11px;color:var(--muted)">Field Coverage</div>
+          </div>
+          <div style="background:var(--surface-alt);border-radius:8px;padding:10px 18px;text-align:center">
+            <div style="font-size:22px;font-weight:700;color:var(--accent2)">${tr.fields_covered ?? 0}</div>
+            <div style="font-size:11px;color:var(--muted)">Fields Covered</div>
+          </div>
+          <div style="background:var(--surface-alt);border-radius:8px;padding:10px 18px;text-align:center">
+            <div style="font-size:22px;font-weight:700;color:${(tr.fields_missing??0) > 0 ? 'var(--danger)' : 'var(--accent2)'}">${tr.fields_missing ?? 0}</div>
+            <div style="font-size:11px;color:var(--muted)">Fields Missing</div>
+          </div>
+          <div style="background:var(--surface-alt);border-radius:8px;padding:10px 18px;text-align:center">
+            <div style="font-size:22px;font-weight:700;color:var(--accent)">${testFileNames.length}</div>
+            <div style="font-size:11px;color:var(--muted)">Test Files</div>
+          </div>
+        </div>
+
+        ${missingFields.length > 0 ? `
+        <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);border-radius:6px;padding:10px 14px;margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;color:var(--danger);margin-bottom:6px">⚠️ ${missingFields.length} field(s) not found in generated code — review Step 7 output:</div>
+          <div style="font-size:12px;color:var(--text);font-family:monospace">${missingFields.map(f => esc(f)).join(', ')}</div>
+        </div>` : ''}
+
+        <!-- Field coverage table -->
+        ${(tr.field_coverage||[]).length > 0 ? `
+        <div style="margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Field Coverage</div>
+          <div style="overflow-x:auto;max-height:220px;overflow-y:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead>
+                <tr style="background:var(--surface-alt);position:sticky;top:0">
+                  <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)">Status</th>
+                  <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)">Target Field</th>
+                  <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)">Table</th>
+                  <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border)">Found In</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${(tr.field_coverage||[]).map(fc => `
+                <tr style="border-bottom:1px solid var(--border)">
+                  <td style="padding:5px 10px">${fc.covered ? '✅' : '❌'}</td>
+                  <td style="padding:5px 10px;font-family:monospace;font-weight:600;color:var(--text)">${esc(fc.target_field)}</td>
+                  <td style="padding:5px 10px;color:var(--muted)">${esc(fc.target_table||'—')}</td>
+                  <td style="padding:5px 10px;color:var(--muted);font-size:11px">${fc.found_in_files?.length ? esc(fc.found_in_files.join(', ')) : (fc.note ? esc(fc.note) : '—')}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>` : ''}
+
+        <!-- Filter coverage -->
+        ${(tr.filter_coverage||[]).length > 0 ? `
+        <div style="margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Filter Coverage</div>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${(tr.filter_coverage||[]).map(fc => `
+            <div style="background:var(--surface-alt);border-radius:6px;padding:8px 12px;display:flex;align-items:flex-start;gap:10px">
+              <span style="font-size:14px;flex-shrink:0">${fc.covered ? '✅' : '⚠️'}</span>
+              <div>
+                <div style="font-size:12px;font-family:monospace;color:var(--text)">${esc(fc.filter_description)}</div>
+                <div style="font-size:11px;color:var(--muted)">${esc(fc.source)}</div>
+                ${!fc.covered && fc.note ? `<div style="font-size:11px;color:var(--danger);margin-top:2px">${esc(fc.note)}</div>` : ''}
+              </div>
+            </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+        <!-- Test files -->
+        ${testFileNames.length > 0 ? `
+        <div>
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Generated Test Files</div>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${testFileNames.map(fname => `
+            <button class="btn btn-secondary" style="font-size:11px;padding:5px 12px;font-family:monospace"
+              onclick="downloadTestFile('${esc(job.job_id)}','${esc(fname)}')">
+              ⬇ ${esc(fname.split('/').pop())}
+            </button>`).join('')}
+          </div>
+        </div>` : ''}
+
+        ${(tr.notes||[]).length > 0 ? `
+        <div style="margin-top:12px;font-size:12px;color:var(--muted)">
+          ${tr.notes.map(n => `<div style="padding:3px 0">${esc(n)}</div>`).join('')}
+        </div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // ── STEP 12 — CODE REVIEW SIGN-OFF ────────────────────────
+  if (job.status === 'awaiting_code_review' || state.code_sign_off) {
+    const signedOff = !!state.code_sign_off;
+    const sod = state.code_sign_off || {};
+
+    if (signedOff) {
+      const isApproved = sod.decision === 'APPROVED';
+      html += `<div class="card" style="border-color:${isApproved ? 'var(--accent2)' : 'var(--danger)'}">
+        <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+          <span><span class="icon">🏁</span> Step 12 — Code Review Sign-Off</span>
+          <span style="display:flex;align-items:center;gap:8px">
+            <span class="badge ${isApproved ? 'badge-complete' : 'badge-blocked'}" style="font-size:11px">${isApproved ? '✅ APPROVED' : '❌ REJECTED'}</span>
+            <span class="card-chevron" style="margin-left:0">▼</span>
+          </span>
+        </div>
+        <div class="card-body">
+          <div style="font-size:13px;color:var(--muted)">
+            Reviewed by <strong>${esc(sod.reviewer_name||'')}</strong> (${esc(sod.reviewer_role||'')})
+            on ${esc((sod.review_date||'').slice(0,10))}
+            — decision: <strong style="color:${isApproved?'var(--accent2)':'var(--danger)'}">${esc(sod.decision||'')}</strong>
+          </div>
+          ${sod.notes ? `<div style="margin-top:8px;font-size:13px;color:var(--text)">${esc(sod.notes)}</div>` : ''}
+        </div>
+      </div>`;
+    } else {
+      // Gate is open — show sign-off form
+      html += `<div class="card" style="border-color:var(--accent)">
+        <div class="card-title" onclick="toggleCard(this)" style="justify-content:space-between">
+          <span><span class="icon">🏁</span> Step 12 — Code Review Sign-Off</span>
+          <span style="display:flex;align-items:center;gap:8px">
+            <span class="badge badge-waiting" style="font-size:11px">⏳ Awaiting Sign-Off</span>
+            <span class="card-chevron" style="margin-left:0">▼</span>
+          </span>
+        </div>
+        <div class="card-body">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:14px">
+            Review the generated code (Step 7), security scan (Step 8), security review (Step 9),
+            logic equivalence + quality report (Step 10), and test coverage (Step 11).
+            Then record your decision below.
+          </div>
+          <div class="form-group">
+            <label>Your Name</label>
+            <input id="codeReviewerName" type="text" placeholder="Full name" />
+          </div>
+          <div class="form-group">
+            <label>Role</label>
+            <select id="codeReviewerRole">
+              <option>Data Engineer</option>
+              <option>Senior Data Engineer</option>
+              <option>Tech Lead</option>
+              <option>Architect</option>
+              <option>QA Engineer</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Notes (optional)</label>
+            <textarea id="codeReviewNotes" placeholder="Observations, caveats, or issues found…" style="height:80px;resize:vertical"></textarea>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-success" onclick="event.stopPropagation();submitCodeSignoff('${job.job_id}','APPROVED')">✅ Approve — Mark Complete</button>
+            <button class="btn btn-danger"  onclick="event.stopPropagation();submitCodeSignoff('${job.job_id}','REJECTED')">❌ Reject — Block &amp; Start Over</button>
+          </div>
+        </div>
+      </div>`;
+    }
+  }
+
+  // ── PIPELINE LOG ──────────────────────────────────────────
+  const pipelineLog = state.pipeline_log || [];
+  html += renderLogPanel(pipelineLog, job.job_id);
+
+  document.getElementById('mainPanel').innerHTML = html;
+
+  // After render: auto-scroll the log to bottom
+  const ls = document.getElementById('logScroll');
+  if (ls) ls.scrollTop = ls.scrollHeight;
+}
+
+// ─────────────────────────────────────────────
+// Render Flag (with severity + recommendation)
+// ─────────────────────────────────────────────
+function renderFlag(f) {
+  const sevClass = 'sev-' + (f.severity || 'MEDIUM').toLowerCase();
+  const blockingClass = f.blocking ? 'blocking' : '';
+  return `<div class="flag ${blockingClass} ${sevClass}">
+    <div class="flag-header">
+      <span class="sev-badge ${f.severity||'MEDIUM'}">${f.severity||'MEDIUM'}</span>
+      ${f.blocking ? '<span class="flag-blocking-pill">🚫 BLOCKING</span>' : ''}
+      <span class="flag-type">${esc(f.flag_type)}</span>
+    </div>
+    <div class="flag-loc">📍 ${esc(f.location)}</div>
+    <div class="flag-desc">${esc(f.description)}</div>
+    ${f.recommendation ? `<div class="flag-rec">${esc(f.recommendation)}</div>` : ''}
+  </div>`;
+}
+
+// ─────────────────────────────────────────────
+// Log Panel
+// ─────────────────────────────────────────────
+function renderLogPanel(entries, jobId) {
+  const count = entries.length;
+  const rows = entries.map(e => {
+    const ts   = (e.ts || '').slice(11, 19);                // HH:MM:SS
+    const step = e.step != null ? `step ${e.step}`.padEnd(6) : '      ';
+    const lvl  = e.level || 'INFO';
+    const msg  = esc(e.message || '');
+    const data = e.data ? `<span class="log-data">  ${esc(JSON.stringify(e.data))}</span>` : '';
+    const exc  = e.exc  ? `<span class="log-exc">${esc(e.exc)}</span>` : '';
+    return `<div class="log-row">
+      <span class="log-ts">${ts}</span>
+      <span class="log-step">${esc(step)}</span>
+      <span class="log-lvl ${lvl}">${lvl}</span>
+      <span class="log-msg">${msg}${data}${exc}</span>
+    </div>`;
+  }).join('');
+
+  const placeholder = count === 0
+    ? '<div style="color:#4b5563;padding:8px 0;font-size:11px">No log entries yet — log populates as the pipeline runs.</div>'
+    : '';
+
+  return `<div class="card card-collapsed" style="margin-top:8px">
+    <div class="card-title" onclick="toggleCard(this)" style="margin-bottom:0">
+      <span class="icon">📋</span> Pipeline Log
+      <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <span style="font-size:11px;color:var(--muted)">${count} entries</span>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();downloadJobLog('${jobId}')">⬇ Download .log</button>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();refreshLog('${jobId}')">↻ Refresh</button>
+        <span class="card-chevron" style="margin-left:0">▼</span>
+      </span>
+    </div>
+    <div class="card-body">
+    <div class="log-panel">
+      <div class="log-scroll" id="logScroll">
+        ${placeholder}${rows}
+      </div>
+    </div>
+    </div>
+  </div>`;
+}
+
+async function refreshLog(jobId) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/logs`);
+    const data = await res.json();
+    const entries = data.entries || [];
+    const panel = document.getElementById('logScroll');
+    if (!panel) return;
+    panel.innerHTML = entries.map(e => {
+      const ts   = (e.ts || '').slice(11, 19);
+      const step = e.step != null ? `step ${e.step}`.padEnd(6) : '      ';
+      const lvl  = e.level || 'INFO';
+      const msg  = esc(e.message || '');
+      const data = e.data ? `<span class="log-data">  ${esc(JSON.stringify(e.data))}</span>` : '';
+      const exc  = e.exc  ? `<span class="log-exc">${esc(e.exc)}</span>` : '';
+      return `<div class="log-row">
+        <span class="log-ts">${ts}</span>
+        <span class="log-step">${esc(step)}</span>
+        <span class="log-lvl ${lvl}">${lvl}</span>
+        <span class="log-msg">${msg}${data}${exc}</span>
+      </div>`;
+    }).join('') || '<div style="color:#4b5563;padding:8px 0;font-size:11px">No log entries yet.</div>';
+    panel.scrollTop = panel.scrollHeight;
+  } catch(e) { console.error('Log refresh failed', e); }
+}
+
+async function deleteJob(jobId, filename) {
+  if (!confirm(`Delete job "${filename}"?\n\nThis will remove the job record, log file, and S2T Excel from the server. This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert('Delete failed: ' + (err.detail || res.statusText));
+      return;
+    }
+    // If we just deleted the active job, clear the panel
+    if (currentJobId === jobId) {
+      currentJobId = null;
+      if (eventSource) { eventSource.close(); eventSource = null; }
+      document.getElementById('jobPanel').innerHTML =
+        '<div class="empty"><div style="font-size:32px">🗂️</div><div>Select a job from the list</div></div>';
+    }
+    await loadJobs();
+  } catch(e) { alert('Delete failed: ' + e.message); }
+}
+
+async function downloadS2T(jobId) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/s2t/download`);
+    if (!res.ok) { alert('S2T Excel not available yet — run a job first.'); return; }
+    const blob = await res.blob();
+    const cd   = res.headers.get('content-disposition') || '';
+    const match = cd.match(/filename="?([^"]+)"?/);
+    const fname = match ? match[1] : `${jobId}_s2t.xlsx`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+  } catch(e) { alert('Download failed: ' + e.message); }
+}
+
+async function downloadJobLog(jobId) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/logs/download`);
+    if (!res.ok) { alert('Log file not available yet.'); return; }
+    const text = await res.text();
+    const blob = new Blob([text], {type: 'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${jobId}.log`;
+    a.click();
+  } catch(e) { alert('Download failed: ' + e.message); }
+}
+
+function renderStepper(currentStep, status) {
+  const isBlocked = status === 'blocked' || status === 'failed';
+  return `<div class="stepper">
+    ${STEPS.map((s) => {
+      let dotClass = '';
+      if (s.n < currentStep) dotClass = 'done';
+      else if (s.n === currentStep) {
+        if (status === 'awaiting_review' || status === 'awaiting_security_review' || status === 'awaiting_code_review') dotClass = 'waiting';
+        else if (isBlocked) dotClass = 'blocked';
+        else dotClass = 'active';
+      }
+      const connDone = s.n < currentStep;
+      return `<div class="step">
+        <div class="step-connector ${connDone?'done':''}"></div>
+        <div class="step-inner">
+          <div class="step-dot ${dotClass}">${dotClass==='done'?'✓':s.n}</div>
+          <div class="step-label">${s.label}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderFailedChecks(v) {
+  const failed = [...(v.completeness_checks||[]), ...(v.accuracy_checks||[]), ...(v.self_checks||[])]
+    .filter(c => !c.passed);
+  if (!failed.length) return '';
+  return `<div style="margin-top:14px">
+    <div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--muted)">FAILED CHECKS (${failed.length})</div>
+    <div class="check-grid">
+      ${failed.map(c=>`<div class="check fail"><span class="check-icon">✗</span><span>${esc(c.name)}${c.detail?`<br/><span style="color:var(--muted);font-size:11px">${esc(c.detail)}</span>`:''}</span></div>`).join('')}
+    </div>
+  </div>`;
+}
+
+// ─────────────────────────────────────────────
+// Error traceback toggle
+// ─────────────────────────────────────────────
+function toggleCard(titleEl) {
+  // titleEl = the .card-title element
+  const card = titleEl.closest('.card');
+  if (!card) return;
+  card.classList.toggle('card-collapsed');
+  // fix margin-bottom on title when collapsing/expanding
+  titleEl.style.marginBottom = card.classList.contains('card-collapsed') ? '0' : '';
+}
+
+function toggleTrace(id) {
+  const el = document.getElementById(id);
+  const toggle = el.previousElementSibling;
+  if (el.classList.contains('visible')) {
+    el.classList.remove('visible');
+    toggle.textContent = '▶ Show full traceback';
+  } else {
+    el.classList.add('visible');
+    toggle.textContent = '▼ Hide traceback';
+  }
+}
+
+// ─────────────────────────────────────────────
+// Re-upload helper
+// ─────────────────────────────────────────────
+function reuploadForJob() {
+  document.getElementById('fileInput').click();
+}
+
+// ─────────────────────────────────────────────
+// Sign-off submission
+// ─────────────────────────────────────────────
+async function submitSignoff(jobId, decision, flags) {
+  const name  = document.getElementById('reviewerName')?.value?.trim();
+  const role  = document.getElementById('reviewerRole')?.value;
+  const notes = document.getElementById('reviewNotes')?.value?.trim();
+
+  if (!name) { alert('Please enter your name.'); return; }
+
+  const flagResolutions = flags.map((f, i) => {
+    const applyFixEl = document.getElementById(`flag_apply_fix_${i}`);
+    const applyFix   = applyFixEl ? applyFixEl.checked : false;
+    return {
+      flag_type:      f.flag_type,
+      location:       f.location,
+      action:         document.getElementById(`flag_action_${i}`)?.value || 'accepted',
+      rationale:      document.getElementById(`flag_note_${i}`)?.value || '',
+      apply_fix:      applyFix,
+      fix_suggestion: (applyFix && f.auto_fix_suggestion) ? f.auto_fix_suggestion : null,
+    };
+  });
+
+  const payload = { reviewer_name: name, reviewer_role: role, decision, flag_resolutions: flagResolutions, notes };
+
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/sign-off`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Server error ${res.status}: ${text.slice(0, 300)}`);
+    }
+    await res.json();
+    // Reload job state in either case (approved or rejected)
+    await openJob(jobId);
+  } catch(e) {
+    alert('Sign-off submission failed: ' + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Security review submission (Step 9 gate)
+// ─────────────────────────────────────────────
+async function submitSecurityReview(jobId, decision) {
+  const name  = document.getElementById('secReviewerName')?.value?.trim();
+  const role  = document.getElementById('secReviewerRole')?.value;
+  const notes = document.getElementById('secReviewNotes')?.value?.trim();
+
+  if (!name) { alert('Please enter your name.'); return; }
+
+  const labels = {
+    APPROVED:     'approve and proceed to code quality review',
+    ACKNOWLEDGED: 'acknowledge the findings and proceed (accepted risk)',
+    FAILED:       'FAIL this job and block the pipeline permanently',
+  };
+  if (!confirm(`Are you sure you want to ${labels[decision] || decision}?`)) return;
+
+  const payload = { reviewer_name: name, reviewer_role: role, decision, notes: notes || null };
+
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/security-review`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      alert('Security review failed: ' + (err.detail || res.statusText));
+      return;
+    }
+    await openJob(jobId);
+  } catch(e) {
+    alert('Security review submission failed: ' + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Code review sign-off submission (Step 12)
+// ─────────────────────────────────────────────
+async function submitCodeSignoff(jobId, decision) {
+  const name  = document.getElementById('codeReviewerName')?.value?.trim();
+  const role  = document.getElementById('codeReviewerRole')?.value;
+  const notes = document.getElementById('codeReviewNotes')?.value?.trim();
+
+  if (!name) { alert('Please enter your name.'); return; }
+
+  const label = decision === 'APPROVED'
+    ? 'approve and mark this job complete'
+    : 'reject and block this job — you will need to re-upload the mapping to start over';
+  if (!confirm(`Are you sure you want to ${label}?`)) return;
+
+  const payload = { reviewer_name: name, reviewer_role: role, decision, notes: notes || null };
+
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/code-signoff`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      alert('Sign-off failed: ' + (err.detail || res.statusText));
+      return;
+    }
+    await openJob(jobId);
+  } catch(e) {
+    alert('Sign-off submission failed: ' + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Test file download
+// ─────────────────────────────────────────────
+async function downloadTestFile(jobId, filename) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/tests/download/${encodeURIComponent(filename)}`);
+    if (!res.ok) { alert('Download failed: ' + res.statusText); return; }
+    const data = await res.json();
+    const blob = new Blob([data.content], {type:'text/plain'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = filename.split('/').pop();
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch(e) { alert('Download failed: ' + e.message); }
+}
+
+// ─────────────────────────────────────────────
+// Code viewer / file viewer
+// ─────────────────────────────────────────────
+function showCodeTab(filename, tabEl, files) {
+  document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+  document.getElementById('codeBlock').textContent = files[filename] || '';
+}
+
+function showFileInViewer(filename, files) {
+  // Scroll to code viewer and activate the tab
+  const tabs = document.querySelectorAll('.code-tab');
+  tabs.forEach(t => {
+    if (t.textContent.trim() === filename) {
+      t.click();
+      t.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  });
+  const codeBlock = document.getElementById('codeBlock');
+  if (codeBlock) codeBlock.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function downloadCode(jobId, filename) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/download/${encodeURIComponent(filename)}`);
+    const data = await res.json();
+    const blob = new Blob([data.content], {type:'text/plain'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch(e) {
+    alert('Download failed: ' + e.message);
+  }
+}
+
+async function downloadOutputZip(jobId) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/output.zip`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({detail: res.statusText}));
+      alert('ZIP download failed: ' + (err.detail || res.statusText));
+      return;
+    }
+    const blob = await res.blob();
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match ? match[1] : `${jobId}_output.zip`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch(e) {
+    alert('ZIP download failed: ' + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Report Download (MD + PDF)
+// ─────────────────────────────────────────────
+function downloadReportMd() {
+  const job = window._currentJob;
+  if (!job) return;
+  const md  = buildReportMarkdown(job);
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const safe = (job.filename || 'report').replace(/[^a-z0-9_\-\.]/gi, '_');
+  a.href     = url;
+  a.download = `${safe}_conversion_report.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function openPrintReport() {
+  const job = window._currentJob;
+  if (!job) return;
+  const md   = buildReportMarkdown(job);
+  const body = markdownToHtmlFull(md);
+  const safe = (job.filename || 'report').replace(/[^a-z0-9_\-\.]/gi, '_');
+
+  const html = `<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="UTF-8"/>
+  <title>Conversion Report — ${job.filename}</title>
+  <style>
+    *  { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Georgia, 'Times New Roman', serif; font-size: 12pt;
+           line-height: 1.65; color: #111; background: #fff;
+           max-width: 860px; margin: 0 auto; padding: 48px 40px; }
+    h1   { font-size: 20pt; border-bottom: 2px solid #222; padding-bottom: 8px; margin: 0 0 16px; }
+    h2   { font-size: 15pt; border-bottom: 1px solid #bbb; padding-bottom: 4px; margin: 28px 0 10px; color: #1a1a4e; }
+    h3   { font-size: 12pt; font-weight: bold; margin: 16px 0 6px; color: #333; }
+    h4   { font-size: 11pt; font-weight: bold; margin: 10px 0 4px; }
+    p    { margin: 0 0 10px; }
+    ul, ol { margin: 4px 0 10px 22px; }
+    li   { margin-bottom: 3px; }
+    hr   { border: none; border-top: 1px solid #ccc; margin: 20px 0; }
+    pre  { background: #f4f4f4; border: 1px solid #ddd; border-radius: 4px;
+           padding: 12px 14px; font-size: 9pt; font-family: 'Courier New', monospace;
+           white-space: pre-wrap; word-break: break-all; overflow: visible;
+           margin: 8px 0 14px; }
+    code { font-family: 'Courier New', monospace; background: #f0f0f0;
+           padding: 1px 5px; border-radius: 3px; font-size: 9pt; }
+    pre code { background: none; padding: 0; }
+    strong { font-weight: bold; }
+    em     { font-style: italic; }
+    .meta  { font-size: 11pt; color: #444; margin-bottom: 20px; }
+    .meta span { margin-right: 16px; }
+    .footer { margin-top: 40px; font-size: 9pt; color: #999; border-top: 1px solid #eee; padding-top: 10px; }
+    @media print {
+      body { padding: 0; max-width: 100%; }
+      h2   { break-before: auto; }
+      pre  { break-inside: avoid; }
+      @page { margin: 0.75in; size: A4; }
+    }
+  </style>
+</head>
+<body>
+${body}
+<div class="footer">Generated by Informatica Conversion Tool &middot; ${new Date().toLocaleString()}</div>
+<script>
+  // Auto-trigger print once page has rendered
+  window.addEventListener('load', function() {
+    setTimeout(function() { window.print(); }, 400);
+  });
+<\/script>
+</body></html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) {
+    alert('Pop-up was blocked. Please allow pop-ups for this page and try again.');
+    return;
+  }
+  win.document.write(html);
+  win.document.close();
+}
+
+async function downloadManifestXlsx() {
+  const job = window._currentJob;
+  if (!job) return;
+  // Manifest is generated on demand by the API — not stored in state
+  const resp = await fetch(`/api/jobs/${job.job_id}/manifest.xlsx`);
+  if (!resp.ok) { alert('Manifest not available for this job.'); return; }
+  const blob = await resp.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const safe = (job.filename || 'mapping').replace(/[^a-z0-9_\-\.]/gi, '_').replace(/\.xml$/i, '');
+  a.href     = url;
+  a.download = `manifest_${safe}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Manifest re-upload helpers
+function handleManifestFileChosen(input, jobId) {
+  const btn    = document.getElementById('manifestUploadBtn');
+  const status = document.getElementById('manifestUploadStatus');
+  const label  = document.getElementById('manifestUploadLabel');
+  if (!input.files || !input.files[0]) return;
+  const fname = input.files[0].name;
+  if (label) label.innerHTML = `📁 ${fname} <input type="file" id="manifestFileInput" accept=".xlsx" style="display:none" onchange="handleManifestFileChosen(this,'${jobId}')"/>`;
+  if (btn) btn.style.display = 'inline-flex';
+  if (status) status.textContent = '';
+}
+
+async function uploadManifest(jobId) {
+  const input  = document.getElementById('manifestFileInput');
+  const btn    = document.getElementById('manifestUploadBtn');
+  const status = document.getElementById('manifestUploadStatus');
+  if (!input || !input.files || !input.files[0]) {
+    if (status) { status.textContent = '⚠ No file selected.'; status.style.color = '#f87171'; }
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Uploading…'; }
+  if (status) { status.textContent = ''; }
+
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  try {
+    const resp = await fetch(`/api/jobs/${jobId}/manifest-upload`, { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (!resp.ok) {
+      if (status) { status.textContent = `✗ ${data.detail || 'Upload failed.'}`; status.style.color = '#f87171'; }
+    } else {
+      const n = data.override_count || 0;
+      if (status) {
+        status.innerHTML = `<span style="color:#4ade80;font-weight:600">✓ ${n} override${n !== 1 ? 's' : ''} stored</span>${n === 0 ? ' <span style="color:var(--muted)">(no Override column values found — check the Review Required sheet)</span>' : ''}`;
+      }
+      if (btn) btn.style.display = 'none';
+    }
+  } catch (e) {
+    if (status) { status.textContent = `✗ Network error: ${e.message}`; status.style.color = '#f87171'; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⬆ Upload Overrides'; }
+  }
+}
+
+// Enhanced markdown→HTML converter for the print window
+function markdownToHtmlFull(md) {
+  const escaped = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  return escaped
+    // fenced code blocks (must come before inline code)
+    .replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) => `<pre><code>${code}</code></pre>`)
+    // headings
+    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^### (.+)$/gm,  '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm,   '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm,    '<h1>$1</h1>')
+    // bold / italic / inline code
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,     '<em>$1</em>')
+    .replace(/_(.+?)_/g,       '<em>$1</em>')
+    .replace(/`([^`]+)`/g,     '<code>$1</code>')
+    // horizontal rule
+    .replace(/^---$/gm, '<hr/>')
+    // bullet lists
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    // blank lines → paragraph breaks
+    .replace(/\n\n+/g, '</p><p>')
+    // wrap in paragraph tags
+    .replace(/^(?!<[hpulo]|<li|<hr|<pre)(.+)$/gm, '<p>$1</p>');
+}
+
+function buildReportMarkdown(job) {
+  const state = job.state || {};
+  const L = [];   // lines accumulator
+
+  const hr   = () => L.push('---', '');
+  const h1   = s => L.push(`# ${s}`, '');
+  const h2   = s => L.push(`## ${s}`, '');
+  const h3   = s => L.push(`### ${s}`, '');
+  const p    = s => L.push(s, '');
+  const kv   = (k, v) => L.push(`**${k}:** ${v ?? '—'}`);
+  const code = (lang, body) => { L.push('```' + lang); L.push(body); L.push('```', ''); };
+
+  // ── Cover ────────────────────────────────────────────────────────────────
+  h1(`Conversion Report: ${job.filename}`);
+  kv('Job ID',    job.job_id);
+  kv('Status',    job.status?.toUpperCase());
+  kv('Started',   utcDate(job.created_at).toLocaleString());
+  if (job.complexity) kv('Complexity', job.complexity);
+  L.push('');
+  hr();
+
+  // ── Step 1 — Parse Report ───────────────────────────────────────────────
+  const pr = state.parse_report;
+  if (pr) {
+    h2('Step 1 — Parse Report');
+    kv('Mapping Name', pr.mapping_name);
+    kv('Source',       pr.source_name);
+    kv('Target',       pr.target_name);
+    kv('Transformations', pr.transformation_count);
+    kv('Source Fields',   pr.source_field_count);
+    kv('Target Fields',   pr.target_field_count);
+    if (pr.flags?.length) {
+      L.push('', `**Flags (${pr.flags.length}):**`);
+      pr.flags.forEach(f => L.push(`- [${f.severity || f.flag_type}] ${f.message || f.description || ''}`));
+    }
+    L.push('');
+  }
+
+  // ── Step 2 — Complexity ──────────────────────────────────────────────────
+  const cx = state.complexity;
+  if (cx) {
+    h2('Step 2 — Complexity Classification');
+    kv('Tier',      cx.tier);
+    kv('Score',     cx.score);
+    kv('Rationale', cx.rationale);
+    L.push('');
+  }
+
+  // ── Step 3 — Documentation ───────────────────────────────────────────────
+  if (state.documentation_md) {
+    h2('Step 3 — Documentation');
+    L.push(state.documentation_md, '');
+  }
+
+  // ── Step 4 — Verification ────────────────────────────────────────────────
+  const vr = state.verification;
+  if (vr) {
+    h2('Step 4 — Verification Report');
+    kv('Overall Status', vr.overall_status);
+    kv('Blocking Flags', vr.blocking_flag_count ?? 0);
+    kv('Total Flags',    vr.flags?.length ?? 0);
+    if (vr.flags?.length) {
+      L.push('', '**Flags:**');
+      vr.flags.forEach(f => {
+        const sev = f.severity || f.flag_type || '';
+        L.push(`- **[${sev}]** ${f.message || f.description || ''}`);
+        if (f.recommendation) L.push(`  - 💡 ${f.recommendation}`);
+      });
+    }
+    L.push('');
+  }
+
+  // ── Step 5 — Human Review Sign-off ───────────────────────────────────────
+  const so = state.sign_off;
+  if (so) {
+    h2('Step 5 — Human Review Sign-off');
+    kv('Reviewer',  so.reviewer_name);
+    kv('Role',      so.reviewer_role);
+    kv('Decision',  so.decision);
+    kv('Date',      (so.review_date || '').slice(0, 10));
+    if (so.notes) p(so.notes);
+    if (so.applied_fixes?.length) {
+      L.push('**Applied Fixes:**');
+      so.applied_fixes.forEach(f => L.push(`- ${f.description || f}`));
+      L.push('');
+    }
+  }
+
+  // ── Step 6 — Stack Assignment ────────────────────────────────────────────
+  const sa = state.stack_assignment;
+  if (sa) {
+    h2('Step 6 — Stack Assignment');
+    kv('Assigned Stack',   sa.assigned_stack);
+    kv('Complexity Tier',  sa.complexity_tier);
+    if (sa.rationale) p(sa.rationale);
+    if (sa.special_concerns?.length) {
+      L.push('**Special Concerns:**');
+      sa.special_concerns.forEach(c => L.push(`- ${c}`));
+      L.push('');
+    }
+  }
+
+  // ── Step 7 — Converted Code ──────────────────────────────────────────────
+  const co = state.conversion;
+  if (co?.files) {
+    h2(`Step 7 — Converted Code (${co.target_stack})`);
+    if (co.notes?.length) {
+      L.push('**Notes:**');
+      co.notes.forEach(n => L.push(`- ${n}`));
+      L.push('');
+    }
+    Object.entries(co.files).forEach(([fname, body]) => {
+      h3(fname);
+      const ext = fname.split('.').pop()?.toLowerCase() || '';
+      const lang = { py:'python', sql:'sql', yml:'yaml', yaml:'yaml', md:'markdown' }[ext] || '';
+      code(lang, body);
+    });
+  }
+
+  // ── Step 8 — Security Scan ───────────────────────────────────────────────
+  const ss = state.security_scan;
+  if (ss) {
+    h2('Step 8 — Security Scan');
+    kv('Recommendation', ss.recommendation);
+    kv('Critical', ss.critical_count ?? 0);
+    kv('High',     ss.high_count ?? 0);
+    kv('Medium',   ss.medium_count ?? 0);
+    kv('Low',      ss.low_count ?? 0);
+    kv('Bandit Ran', ss.ran_bandit ? 'Yes' : 'No');
+    if (ss.claude_summary) p(ss.claude_summary);
+    if (ss.findings?.length) {
+      L.push('**Findings:**', '');
+      ss.findings.forEach(f => {
+        L.push(`#### [${f.severity}] ${f.test_name || f.test_id || ''} _(${f.source})_`);
+        if (f.filename) L.push(`📄 \`${f.filename}\`${f.line ? ` line ${f.line}` : ''}`);
+        L.push(f.text || '');
+        if (f.code) code('', f.code);
+        else L.push('');
+      });
+    } else {
+      p('✅ No security findings detected.');
+    }
+  }
+
+  // ── Step 9 — Security Review ─────────────────────────────────────────────
+  const sso = state.security_sign_off;
+  if (sso) {
+    h2('Step 9 — Security Review');
+    kv('Decision',  sso.decision);
+    kv('Reviewer',  sso.reviewer_name);
+    kv('Role',      sso.reviewer_role);
+    kv('Date',      (sso.review_date||'').slice(0,10));
+    if (sso.notes) p(sso.notes);
+  }
+
+  // ── Step 10 — Code Quality Review (+ Logic Equivalence) ──────────────────
+  const cr = state.code_review;
+  if (cr) {
+    h2('Step 10 — Code Quality Review');
+    kv('Recommendation', cr.recommendation);
+    kv('Passed', cr.total_passed ?? 0);
+    kv('Failed', cr.total_failed ?? 0);
+    if (cr.summary) p(cr.summary);
+
+    // Logic Equivalence sub-section
+    const eq = cr.equivalence_report;
+    if (eq) {
+      L.push('', '**Logic Equivalence Check (XML → Generated Code):**', '');
+      kv('Verified', eq.total_verified ?? 0);
+      kv('Needs Review', eq.total_needs_review ?? 0);
+      kv('Mismatches', eq.total_mismatches ?? 0);
+      kv('Coverage', `${eq.coverage_pct ?? 0}%`);
+      if (eq.summary) p(eq.summary);
+      if (eq.checks?.length) {
+        L.push('');
+        eq.checks.forEach(c => {
+          const icon = { VERIFIED:'✅', NEEDS_REVIEW:'⚠️', MISMATCH:'❌' }[c.verdict] || '?';
+          L.push(`- ${icon} **[${c.rule_type}] ${c.rule_id}** — _${c.verdict}_`);
+          L.push(`  - XML: \`${c.xml_rule}\``);
+          L.push(`  - Code: ${c.generated_impl}`);
+          if (c.note) L.push(`  - Note: ${c.note}`);
+        });
+        L.push('');
+      }
+    }
+
+    if (cr.checks?.length) {
+      L.push('**Code Quality Checks:**', '');
+      cr.checks.forEach(c => {
+        const icon = c.passed ? '✅' : '❌';
+        L.push(`- ${icon} **${c.name?.replace(/_/g,' ')}**${c.passed ? '' : ` [${c.severity}]`}${c.note ? ` — ${c.note}` : ''}`);
+      });
+      L.push('');
+    }
+  }
+
+  // ── Step 11 — Test Generation ─────────────────────────────────────────────
+  const tr = state.test_report;
+  if (tr) {
+    h2('Step 11 — Test Generation & Coverage');
+    kv('Field Coverage', `${tr.coverage_pct ?? 0}%`);
+    kv('Fields Covered', tr.fields_covered ?? 0);
+    kv('Fields Missing', tr.fields_missing ?? 0);
+    if (tr.test_files) {
+      const fnames = Object.keys(tr.test_files);
+      kv('Test Files', fnames.length);
+      L.push('');
+      fnames.forEach(fname => {
+        h3(fname);
+        code('python', tr.test_files[fname]);
+      });
+    }
+    if (tr.missing_fields?.length) {
+      L.push('**Missing Fields:**');
+      tr.missing_fields.forEach(f => L.push(`- ${f}`));
+      L.push('');
+    }
+  }
+
+  // ── Step 12 — Code Review Sign-Off ───────────────────────────────────────
+  const cs = state.code_sign_off;
+  if (cs) {
+    h2('Step 12 — Code Review Sign-Off');
+    kv('Reviewer', cs.reviewer_name);
+    kv('Role',     cs.reviewer_role);
+    kv('Decision', cs.decision);
+    kv('Date',     (cs.review_date || '').slice(0, 10));
+    if (cs.notes) p(cs.notes);
+  }
+
+  hr();
+  L.push(`_Generated by Informatica Conversion Tool · ${new Date().toLocaleString()}_`);
+
+  return L.join('\n');
+}
+
+// ─────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escHtml(s) { return esc(s); }
+// Parse a UTC timestamp from the DB (no timezone suffix) correctly.
+// Python's datetime.utcnow().isoformat() omits 'Z', so JavaScript treats it
+// as local time instead of UTC — appending 'Z' forces correct UTC parsing.
+function utcDate(s) { if (!s) return new Date(NaN); return new Date(s.endsWith('Z') ? s : s + 'Z'); }
+
+function markdownToHtml(md) {
+  return md
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm,  '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm,   '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/```[\w]*\n([\s\S]*?)```/g, '<pre>$1</pre>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/\n\n/g, '<br/><br/>');
+}
+
+// ─────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────
+loadJobs();
+setInterval(loadJobs, 5000);
+
+// Load security KB badge once on startup
+(async () => {
+  try {
+    const res  = await fetch('/api/security/knowledge');
+    const data = await res.json();
+    const badge = document.getElementById('secKbBadge');
+    if (badge) {
+      document.getElementById('secKbRules').textContent    = data.rules_count    ?? 0;
+      document.getElementById('secKbPatterns').textContent = data.patterns_count ?? 0;
+      badge.style.display = 'block';
+    }
+  } catch(e) { /* badge is supplemental — never break init */ }
+})();
+
+// ── S2T Full Mapping Modal ────────────────────
+let _s2tAllRecords = [], _s2tUnmappedSrc = [], _s2tUnmappedTgt = [];
+
+function openS2TModal() {
+  const state = window._currentJobState;
+  if (!state || !state.s2t) return;
+  _s2tAllRecords  = state.s2t.records || [];
+  _s2tUnmappedSrc = state.s2t.unmapped_sources || [];
+  _s2tUnmappedTgt = state.s2t.unmapped_targets || [];
+  document.getElementById('s2tModal').style.display = 'flex';
+  renderS2TTable();
+}
+function closeS2TModal() { document.getElementById('s2tModal').style.display = 'none'; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeS2TModal(); });
+
+function renderS2TTable() {
+  const SC = {'Direct':'#dcfce7','Derived':'#fef9c3','Lookup':'#ede9fe','Filtered':'#ffedd5',
+              'Aggregated':'#ede9fe','Unmapped Target':'#fee2e2','Unmapped Source':'#fee2e2'};
+  const SC_TEXT = {'Direct':'#14532d','Derived':'#713f12','Lookup':'#4c1d95','Filtered':'#7c2d12',
+                   'Aggregated':'#4c1d95','Unmapped Target':'#7f1d1d','Unmapped Source':'#7f1d1d'};
+  const statusFilter = document.getElementById('s2tStatusFilter')?.value || '';
+  const q = (document.getElementById('s2tSearch')?.value || '').toLowerCase();
+
+  const filtered = _s2tAllRecords.filter(r => {
+    if (statusFilter && r.status !== statusFilter) return false;
+    if (!q) return true;
+    return (r.source_table+' '+r.source_field+' '+r.target_table+' '+r.target_field+' '+r.logic+' '+r.status).toLowerCase().includes(q);
+  });
+  document.getElementById('s2tCount').textContent = `${filtered.length} of ${_s2tAllRecords.length} rows`;
+
+  document.getElementById('s2tTbody').innerHTML = filtered.map((r,i) => {
+    const bg = i%2===0 ? (SC[r.status]||'#fff') : '#f8fafc';
+    const chain = r.transformation_chain_str || (r.transformation_chain||[]).join(' → ') || '—';
+    return `<tr style="background:${bg}">
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#1e3a8a;font-weight:700;white-space:nowrap">${esc(r.source_table||'—')}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#1e293b;font-weight:600;white-space:nowrap">${esc(r.source_field||'—')}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:10px">${esc(r.source_type||'—')}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#64748b;text-align:center;font-size:16px">→</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#14532d;font-weight:700;white-space:nowrap">${esc(r.target_table||'—')}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#1e293b;font-weight:600;white-space:nowrap">${esc(r.target_field||'—')}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#64748b;font-size:10px">${esc(r.target_type||'—')}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0"><span style="padding:2px 8px;border-radius:4px;background:${SC[r.status]||'#f1f5f9'};color:${SC_TEXT[r.status]||'#1e293b'};font-size:10px;font-weight:700;border:1px solid ${SC[r.status]||'#e2e8f0'};white-space:nowrap">${esc(r.status||'—')}</span></td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;color:#94a3b8;font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(chain)}">${esc(chain)}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#475569;max-width:240px" title="${esc(r.logic||'')}">${esc(r.logic||'—')}</td>
+      <td style="padding:5px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;color:#94a3b8;max-width:180px" title="${esc(r.notes||'')}">${esc(r.notes||'—')}</td>
+    </tr>`;
+  }).join('');
+
+  // Unmapped panels — show when no filter active
+  const showAll = !statusFilter && !q;
+  const srcEl = document.getElementById('s2tUnmappedSrcPanel');
+  const tgtEl = document.getElementById('s2tUnmappedTgtPanel');
+  if (srcEl) {
+    srcEl.style.display = (showAll && _s2tUnmappedSrc.length) ? '' : 'none';
+    srcEl.querySelector('tbody').innerHTML = _s2tUnmappedSrc.map(r =>
+      `<tr><td style="padding:4px 10px;color:#1e3a8a;font-weight:700">${esc(r.source_table)}</td>
+       <td style="padding:4px 10px">${esc(r.source_field)}</td>
+       <td style="padding:4px 10px;color:#94a3b8;font-size:10px">${esc(r.source_type||'')}</td>
+       <td style="padding:4px 10px;color:#94a3b8;font-size:11px">${esc(r.note||'')}</td></tr>`
+    ).join('');
+  }
+  if (tgtEl) {
+    tgtEl.style.display = (showAll && _s2tUnmappedTgt.length) ? '' : 'none';
+    tgtEl.querySelector('tbody').innerHTML = _s2tUnmappedTgt.map(r =>
+      `<tr><td style="padding:4px 10px;color:#14532d;font-weight:700">${esc(r.target_table)}</td>
+       <td style="padding:4px 10px">${esc(r.target_field)}</td>
+       <td style="padding:4px 10px;color:#94a3b8;font-size:10px">${esc(r.target_type||'')}</td>
+       <td style="padding:4px 10px;color:#94a3b8;font-size:11px">${esc(r.note||'')}</td></tr>`
+    ).join('');
+  }
+}
+</script>
+
+<!-- ── S2T Full Mapping Modal ───────────────────────────────────── -->
+<div id="s2tModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.7);align-items:center;justify-content:center;padding:24px">
+  <div style="background:#0f1117;border:1px solid #2e3145;border-radius:12px;width:96vw;max-width:1400px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.6)">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #2e3145;flex-shrink:0">
+      <div>
+        <div style="font-size:16px;font-weight:700;color:#f8fafc">🗺️ Source-to-Target Field Mapping</div>
+        <div id="s2tCount" style="font-size:12px;color:#94a3b8;margin-top:2px"></div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <input id="s2tSearch" type="text" placeholder="Search fields, tables, logic…"
+          oninput="renderS2TTable()"
+          style="padding:6px 12px;font-size:12px;background:#1e2433;border:1px solid #2e3145;border-radius:6px;color:#f8fafc;width:220px;outline:none">
+        <select id="s2tStatusFilter" onchange="renderS2TTable()"
+          style="padding:6px 10px;font-size:12px;background:#1e2433;border:1px solid #2e3145;border-radius:6px;color:#f8fafc;outline:none">
+          <option value="">All statuses</option>
+          <option value="Direct">Direct</option>
+          <option value="Derived">Derived</option>
+          <option value="Lookup">Lookup</option>
+          <option value="Filtered">Filtered</option>
+          <option value="Aggregated">Aggregated</option>
+          <option value="Unmapped Target">Unmapped Target</option>
+        </select>
+        <button onclick="closeS2TModal()" style="padding:6px 14px;background:#334155;color:#f8fafc;border:none;border-radius:6px;cursor:pointer;font-size:13px">✕ Close</button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div style="overflow:auto;flex:1">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:inherit">
+        <thead style="position:sticky;top:0;z-index:1">
+          <tr style="background:#1e293b;color:#94a3b8">
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Source Table</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Source Field</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Type</th>
+            <th style="padding:8px 10px;border-bottom:1px solid #2e3145"></th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Target Table</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Target Field</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Type</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Status</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Transform Chain</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Logic / Expression</th>
+            <th style="padding:8px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:1px solid #2e3145">Notes</th>
+          </tr>
+        </thead>
+        <tbody id="s2tTbody"></tbody>
+      </table>
+
+      <!-- Unmapped Sources panel -->
+      <div id="s2tUnmappedSrcPanel" style="margin:16px;border-radius:8px;overflow:hidden;border:1px solid #fca5a5">
+        <div style="background:#fef2f2;padding:8px 12px;font-size:12px;font-weight:700;color:#dc2626">⚠️ Unmapped Source Fields — exist in source but not used in any target mapping</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#fee2e2">
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Source Table</th>
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Source Field</th>
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Type</th>
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Note</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <!-- Unmapped Targets panel -->
+      <div id="s2tUnmappedTgtPanel" style="margin:16px;margin-top:0;border-radius:8px;overflow:hidden;border:1px solid #fca5a5">
+        <div style="background:#fef2f2;padding:8px 12px;font-size:12px;font-weight:700;color:#dc2626">⚠️ Unmapped Target Fields — target columns with no source mapping</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:#fee2e2">
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Target Table</th>
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Target Field</th>
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Type</th>
+            <th style="padding:6px 10px;text-align:left;color:#991b1b">Note</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

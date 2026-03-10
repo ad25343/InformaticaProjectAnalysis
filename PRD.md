@@ -11,11 +11,11 @@
 
 ## 1. Problem Statement
 
-The InformaticaConversion tool (v2.15.0) converts Informatica PowerCenter mappings
-one at a time, in complete isolation. Each mapping produces a fully self-contained
-output with no awareness of other mappings in the estate. This leads to duplicated
-source definitions, repeated transformation logic, no shared macros, no dependency
-awareness, and no project-level structure in the converted output.
+Informatica PowerCenter estates are converted mapping by mapping, in complete
+isolation. Each mapping produces a fully self-contained output with no awareness
+of other mappings in the estate. This leads to duplicated source definitions,
+repeated transformation logic, no shared macros, no dependency awareness, and no
+project-level structure in the converted output.
 
 InformaticaProjectAnalysis solves this by reading an entire Informatica estate
 before any conversion runs, identifying cross-mapping patterns, grouping
@@ -25,7 +25,7 @@ review and approve before conversion starts.
 
 The tool observes and surfaces characteristics of the estate. It does not prescribe
 target stacks, warehouses, or orchestration platforms — those decisions belong to
-the conversion tool and the humans reviewing the strategy.
+the humans reviewing the strategy and the conversion tools they choose.
 
 ---
 
@@ -42,9 +42,8 @@ distribution, risk flags, estimated conversion scope reduction, and dependency
 depth. Does not need per-mapping technical detail.
 
 **Tertiary: Data Migration Engineer**
-Consumes the approved strategy as input to the conversion tool. Needs the strategy
-JSON to be correct, complete, and compatible with InformaticaConversion's batch
-endpoint.
+Consumes the approved strategy as input to their conversion workflow. Needs the
+strategy JSON to be correct, complete, and well-structured.
 
 ---
 
@@ -118,11 +117,9 @@ review:
     name: "Name"
     email: "email"
 
-conversion:
-  api_endpoint: "http://localhost:8090"
-  batch_concurrency: 3
-  output_dir: "/output/"
+output:
   strategy_format: "json"
+  output_dir: "/output/"
 
 notifications:
   webhook_url: ""
@@ -130,7 +127,6 @@ notifications:
     on_analysis_complete: true
     on_strategy_ready: true
     on_review_approved: true
-    on_conversion_complete: true
 ```
 
 Source types: folder (local path), repo (Git URL + branch), zip (uploaded archive),
@@ -149,8 +145,8 @@ Phase 1   Discovery
           │             Clone repo / mount folder / extract ZIP / pull S3
           │             Scan using scope globs → list of mapping XMLs
           │
-          ├── Step 1.2  Parse All Mappings      [deterministic, reuses InformaticaConversion parser]
-          │             Call parse_xml() per mapping XML
+          ├── Step 1.2  Parse All Mappings      [deterministic]
+          │             Parse each mapping XML → structural components
           │             Cache results by file content hash (SHA-256)
           │             Aggregate into estate-level graph
           │
@@ -185,7 +181,7 @@ Phase 3   Strategy Document Generation
           ├── Step 3.1  PDF Generation          [leadership summary + tech lead detail]
           ├── Step 3.2  Excel Generation        [5 sheets: groups, DAG, shared assets,
           │                                      assignments, risk flags]
-          ├── Step 3.3  Strategy JSON           [machine-readable handoff format]
+          ├── Step 3.3  Strategy JSON           [machine-readable output]
           │
     │
     ▼
@@ -195,13 +191,11 @@ Phase 4   ◼ Human Gate — Strategy Review
           Decision: APPROVE → Phase 5 | REJECT → re-analysis with notes
     │
     ▼
-Phase 5   Handoff to InformaticaConversion
-          Approved strategy JSON delivered via:
-          ├── File drop (watcher picks up)
-          └── API POST to conversion tool's batch endpoint
-          Conversion runs with strategy context:
-          ├── Pattern groups → template + config conversion mode
-          └── Unique mappings → individual conversion mode (existing)
+Phase 5   Strategy Delivery
+          Approved strategy available as:
+          ├── JSON file download
+          ├── PDF + Excel download
+          └── API endpoint (GET /api/projects/{id}/strategy.json)
 ```
 
 ---
@@ -219,40 +213,49 @@ The `source` section of the project config determines how mappings are located:
 | `zip` | Extract uploaded archive, scan using scope globs |
 | `s3` | Pull objects matching scope globs from `location` bucket path |
 
-All resolved files are auto-detected by content (same detection as InformaticaConversion
-Step 0): mapping XML, workflow XML, parameter file, or unknown. Files that don't match
-any known type are logged and skipped.
+All resolved files are auto-detected by content: mapping XML, workflow XML,
+parameter file, or unknown. Files that don't match any known type are logged
+and skipped.
 
-### 6.2 Parser Reuse
+### 6.2 Mapping Parser
 
-The existing `parser_agent.parse_xml()` from InformaticaConversion is called once per
-mapping XML. It returns a `(ParseReport, graph_dict)` tuple. Results are cached by
-SHA-256 hash of file content — unchanged files are not re-parsed on incremental runs.
+Each mapping XML is parsed to extract its structural components:
 
-The N individual graph dicts are aggregated into an estate-level graph:
-- All sources across all mappings, deduplicated by `(name, db_type, owner)`
-- All targets across all mappings, deduplicated
-- All mappings with their full transformation graphs
-- All workflows, parameters, and mapplet definitions
+```
+Per-mapping parse output:
+├── transformations[]         Each transformation with type, ports, expressions
+│   ├── type                  "Expression", "Lookup", "Aggregator", "Router", etc.
+│   ├── ports[]               Input/output ports with datatypes
+│   ├── expressions[]         Expression bodies per port
+│   └── table_attribs{}       Lookup table name, conditions, etc.
+├── connectors[]              Wiring: from_instance → to_instance
+├── sources[]                 Source tables with db_type, owner, fields
+├── targets[]                 Target tables with db_type, owner, fields
+├── parameters[]              $$VAR definitions with defaults
+├── mapplet_instances[]       Mapplet references (expanded if definitions available)
+└── sql_overrides[]           Custom SQL on Source Qualifiers
+```
+
+Results are cached by SHA-256 hash of file content. Unchanged files are not
+re-parsed on incremental runs.
 
 ### 6.3 Estate Graph Construction
 
-From the aggregated data:
+From the per-mapping parse results, the tool builds an estate-level graph:
 
 **Dependency edges** — for each mapping, inspect all Lookup transformations'
-`table_attribs["Lookup Table Name"]`. If that table name matches another mapping's
-target name, create a dependency edge: the lookup mapping depends on the target
-mapping.
+target table names. If that table name matches another mapping's target name,
+create a dependency edge: the lookup mapping depends on the target mapping.
 
-**Shared assets** — tables that appear as Lookup sources in `min_group_size` or more
-mappings across the estate.
+**Shared assets** — tables that appear as Lookup sources in `min_group_size` or
+more mappings across the estate.
 
-**Repeated expressions** — expression bodies (from `transformations[].expressions`)
-that appear verbatim or structurally equivalent in 4+ mappings.
+**Repeated expressions** — expression bodies that appear verbatim or structurally
+equivalent in 4+ mappings.
 
 ### 6.4 AI-Assisted Interpretation
 
-Claude is called to interpret elements the parser cannot classify deterministically:
+AI is called to interpret elements the parser cannot classify deterministically:
 
 - Custom SQL overrides in Source Qualifiers — what do they do, are two overrides
   structurally equivalent?
@@ -268,7 +271,7 @@ Claude is called to interpret elements the parser cannot classify deterministica
 ### 7.1 Structural Fingerprinting
 
 Each mapping's transformation topology is reduced to a canonical spine: the ordered
-sequence of transformation types from source to target, derived from the `connectors`
+sequence of transformation types from source to target, derived from the connectors
 graph.
 
 Example spines:
@@ -347,12 +350,81 @@ Two layers in one document:
 
 ### 8.3 Strategy JSON
 
-Machine-readable handoff format consumed by InformaticaConversion. Schema versioned
-via `strategy_version` field. Contains: pattern groups with members and externalized
-parameters, unique mappings with reasons, shared assets, dependency DAG, and
-execution order (DAG topologically sorted into parallel stages).
+Machine-readable output describing the full analysis results.
 
-Full schema documented in DESIGN.md Section 11.4.
+```json
+{
+    "strategy_version": 1,
+    "estate_name": "FirstBank_Q1_Migration",
+    "analysis_job_id": "uuid",
+    "analyzed_at": "ISO datetime",
+
+    "summary": {
+        "total_mappings": 50,
+        "pattern_groups": 8,
+        "template_candidates": 36,
+        "unique_mappings": 14,
+        "scope_reduction_pct": 56
+    },
+
+    "pattern_groups": [
+        {
+            "group_id": "trunc_load_01",
+            "group_name": "Truncate & Load",
+            "spine": "SQ → EXP → TARGET",
+            "members": [
+                {
+                    "mapping_name": "m_load_customer",
+                    "confidence": "HIGH",
+                    "variation_tier": 1,
+                    "variation_notes": null,
+                    "override": null
+                }
+            ],
+            "externalized_params": ["source_table", "target_table", "column_list"],
+            "template_hints": "Single config-driven truncate-and-load with optional filter"
+        }
+    ],
+
+    "unique_mappings": [
+        {
+            "mapping_name": "m_complex_reconciliation",
+            "reason": "Tier 3 — fundamentally different structure, no pattern match",
+            "risk_flags": ["CUSTOM_SQL_OVERRIDE", "5_JOINER_TRANSFORMATIONS"]
+        }
+    ],
+
+    "shared_assets": [
+        {
+            "table_name": "DIM_CUSTOMER",
+            "referenced_by": ["m_fact_daily_txn", "m_fact_loan_origination", "m_agg_monthly"],
+            "reference_type": "lookup",
+            "recommendation": "shared reference — referenced by 3 mappings"
+        }
+    ],
+
+    "dependency_dag": [
+        {"from": "m_stg_customer", "to": "m_dim_customer", "via": "STG_CUSTOMER"},
+        {"from": "m_dim_customer", "to": "m_fact_daily_txn", "via": "DIM_CUSTOMER"}
+    ],
+
+    "execution_order": [
+        ["m_stg_customer", "m_stg_account", "m_stg_transactions"],
+        ["m_dim_customer", "m_dim_account"],
+        ["m_fact_daily_txn", "m_fact_loan_origination"],
+        ["m_agg_monthly_summary"]
+    ],
+
+    "review": {
+        "approved_at": "ISO datetime",
+        "approved_by": "reviewer_name",
+        "overrides": [],
+        "notes": ""
+    }
+}
+```
+
+Schema versioned via `strategy_version` field.
 
 ---
 
@@ -370,7 +442,7 @@ The strategy review is a structured decision gate in the UI.
 | Split group | Triggers lightweight re-validation (Phase 2 re-run on cached Phase 1 data) |
 | Merge groups | Triggers lightweight re-validation |
 | Add notes | Stored per mapping and per group; carried into strategy JSON |
-| APPROVE | Generates final strategy JSON; triggers Phase 5 handoff |
+| APPROVE | Generates final strategy JSON with review metadata |
 | REJECT | Returns to analysis with reviewer notes as constraints |
 
 ### 9.2 Audit Trail
@@ -380,20 +452,19 @@ Stored in the `audit_log` table and included in the strategy JSON.
 
 ---
 
-## 10. Phase 5 — Handoff
+## 10. Phase 5 — Strategy Delivery
 
-The approved strategy JSON is delivered to InformaticaConversion:
+The approved strategy is available in three formats:
 
-**File mode** — strategy JSON written to `{output_dir}/{project_name}_strategy.json`.
-The conversion tool's watcher detects and processes it.
+**JSON** — machine-readable, schema-versioned. Downloaded via the UI or retrieved
+via `GET /api/projects/{id}/strategy.json`. Suitable as input to any downstream
+conversion tool or workflow.
 
-**API mode** — POST to `{conversion.api_endpoint}/api/jobs/batch` with the strategy
-JSON as payload. The conversion tool spawns jobs per the strategy: template + config
-for pattern groups, individual for unique mappings.
+**PDF** — human-readable strategy document. Leadership summary + tech lead detail.
 
-The conversion agent receives a new `{project_strategy_section}` in its prompt
-containing: pattern group context, externalized parameters, shared asset references,
-dependency context, and tech lead overrides.
+**Excel** — reviewable tabular data. Five sheets covering all analysis outputs.
+
+All three are generated from the same underlying analysis data and are consistent.
 
 ---
 
@@ -418,7 +489,7 @@ Error propagation paths visible.
 
 ### 11.2 Technology
 
-- React frontend (same patterns as InformaticaConversion)
+- React frontend
 - FastAPI backend (port 8090)
 - SSE progress streaming during analysis
 - SQLite persistence
@@ -445,7 +516,7 @@ Error propagation paths visible.
 | `GET` | `/api/projects/{id}/graph` | Get dependency graph data (JSON for frontend rendering) |
 | `GET` | `/api/projects/{id}/groups` | Get pattern groups with members |
 | `GET` | `/api/projects/{id}/groups/{gid}` | Get single group detail |
-| `POST` | `/api/projects/{id}/handoff` | Trigger strategy handoff to InformaticaConversion |
+| `POST` | `/api/projects/{id}/deliver` | Trigger strategy delivery |
 | `GET` | `/api/audit` | Audit trail of all review decisions |
 | `GET` | `/api/health` | Liveness + readiness probe |
 
@@ -463,14 +534,14 @@ AnalysisJob
 ├── created_at / updated_at
 └── state               JSON blob — per-phase artifacts
     ├── source_resolution       Phase 1.1: files found, types detected
-    ├── parse_results           Phase 1.2: per-mapping ParseReport + graph (cached)
+    ├── parse_results           Phase 1.2: per-mapping parse output (cached)
     ├── estate_graph            Phase 1.3: aggregated graph, dependency edges, shared assets
     ├── pattern_groups          Phase 2: groups with members, spines, confidence
     ├── strategy_pdf_path       Phase 3: path to generated PDF
     ├── strategy_xlsx_path      Phase 3: path to generated Excel
-    ├── strategy_json           Phase 3: strategy JSON (the handoff contract)
+    ├── strategy_json           Phase 3: strategy JSON
     ├── review                  Phase 4: review decision, overrides, notes
-    └── handoff                 Phase 5: delivery status, conversion job IDs
+    └── delivery                Phase 5: delivery status
 
 AnalysisStatus
 ├── PENDING
@@ -481,7 +552,7 @@ AnalysisStatus
 ├── GENERATING_STRATEGY
 ├── AWAITING_REVIEW
 ├── APPROVED
-├── HANDING_OFF
+├── DELIVERING
 ├── COMPLETE
 ├── FAILED
 └── REJECTED
@@ -503,8 +574,7 @@ MappingOverride
 
 ParseCache
 ├── file_hash           SHA-256 of XML content
-├── parse_report        Cached ParseReport JSON
-├── graph               Cached graph dict JSON
+├── parse_output        Cached parse result JSON
 ├── cached_at           Timestamp
 ```
 
@@ -551,7 +621,6 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 | Strategy generation time (500 mappings) | < 60 minutes |
 | Human review time (median) | < 30 minutes for 50-mapping estate |
 | Scope reduction | Typical estate: 40-60% reduction (N mappings → fewer templates + unique files) |
-| Strategy-to-conversion handoff success | > 99% of approved strategies accepted by conversion tool |
 | Incremental re-analysis time | < 2 minutes for 5 new mappings added to 50-mapping estate |
 | False positive rate (incorrect groupings) | < 10% |
 | Unclassified mapping rate | < 15% of estate |
@@ -564,7 +633,6 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 - **SQLite** — sufficient for single-instance deployment; PostgreSQL migration path via SQLAlchemy
 - **Claude API required** — Phases 1.3, 2.3, and 3 call the Anthropic API
 - **Port 8090** — default; configurable via `PORT` env var
-- **InformaticaConversion parser** — reused from `ConversionFolder/`; no modifications
 - **No Docker required** — plain Python venv deployment; Dockerfile optional
 - **License** — CC BY-NC 4.0; commercial use requires written permission
 
@@ -576,7 +644,7 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 
 - Project config parser and validation
 - Source resolution (folder type only)
-- Estate-level parsing (reuse InformaticaConversion parser)
+- Mapping XML parser (extract transformations, connectors, sources, targets)
 - Estate graph construction (dependency edges, shared assets)
 - Basic fingerprinting and pattern grouping
 - Strategy JSON generation
@@ -601,13 +669,12 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 - Confidence scoring refinement
 - Execution order generation (topological sort)
 
-### v0.4.0 — Integration + Watcher
+### v0.4.0 — Watcher + Incremental
 
-- Strategy handoff to InformaticaConversion (API mode)
-- Strategy handoff via file drop
 - Watcher mode for `*.project.yaml` files
 - Incremental analysis (parse caching, diff reporting)
 - Override preservation across re-analysis
+- Webhook notifications
 
 ### v0.5.0 — Extended Source Types + CI/CD
 
@@ -615,7 +682,6 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 - ZIP upload source type
 - S3 source type
 - CI/CD API (trigger analysis, retrieve strategy as artifact)
-- Webhook notifications
 
 ### v1.0.0 — Production Ready
 
@@ -623,7 +689,6 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 - GitHub Actions CI pipeline
 - Security audit and hardening
 - Performance optimization for large estates (500+ mappings)
-- User guide and API documentation
 - Audit trail and compliance reporting
 
 ---
@@ -638,8 +703,8 @@ The repository ships a 50-mapping FirstBank test estate for development and test
 | Medium | 20 | Multi-source, lookups, aggregations, SCD2, fact loads |
 | Complex | 15 | 3+ sources, joiners, routers, multiple targets, regulatory/risk |
 
-Located at `ConversionFolder/sample_data/firstbank/` with a ready-to-use project
-config at `firstbank_migration.project.yaml`.
+Located at `sample_data/firstbank/` with a ready-to-use project config at
+`firstbank_migration.project.yaml`.
 
 Expected pattern groups from this estate (validation target):
 - Simple dimension load (7 mappings, spine: SQ → EXP → TARGET)

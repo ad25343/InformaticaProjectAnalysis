@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Informatica Conversion Tool — Login</title>
+  <style>
+    :root {
+      --bg: #0f1117; --surface: #1a1d27; --border: #2e3145;
+      --accent: #6c63ff; --text: #e2e8f0; --muted: #94a3b8;
+      --danger: #f87171;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      min-height: 100vh; display: flex;
+      align-items: center; justify-content: center;
+    }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 40px 36px; width: 100%;
+      max-width: 380px; box-shadow: 0 24px 60px rgba(0,0,0,.4);
+    }
+    .logo { font-size: 15px; font-weight: 700; color: var(--accent); margin-bottom: 4px; }
+    .logo-sub { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+    .lock { font-size: 36px; margin-bottom: 16px; }
+    h1 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .sub { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+    label { display: block; font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
+    input[type="password"] {
+      width: 100%; padding: 11px 14px; background: #0f1117;
+      border: 1px solid var(--border); border-radius: 8px;
+      color: var(--text); font-size: 14px; outline: none;
+      transition: border-color .2s; margin-bottom: 20px;
+    }
+    input[type="password"]:focus { border-color: var(--accent); }
+    button {
+      width: 100%; padding: 11px; background: var(--accent);
+      border: none; border-radius: 8px; color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: opacity .15s;
+    }
+    button:hover { opacity: .88; }
+    .error {
+      background: rgba(248,113,113,.1); border: 1px solid var(--danger);
+      color: var(--danger); border-radius: 8px; padding: 10px 14px;
+      font-size: 13px; margin-bottom: 18px; display: none;
+    }
+    .error.show { display: block; }
+    .footer { text-align: center; font-size: 11px; color: var(--muted); margin-top: 24px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">⚡ Informatica Converter</div>
+  <div class="logo-sub">PowerCenter → Python / PySpark / dbt</div>
+  <div class="lock">🔒</div>
+  <h1>Sign in</h1>
+  <p class="sub">Enter the access password to continue.</p>
+
+  <div class="error" id="errorMsg">Incorrect password. Please try again.</div>
+
+  <form method="POST" action="/login" id="loginForm">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password"
+           placeholder="Enter password" autofocus autocomplete="current-password"/>
+    <button type="submit">Sign in →</button>
+  </form>
+
+  <div class="footer">Informatica Conversion Tool · MVP</div>
+</div>
+
+<script>
+  // Show error if redirected back with ?error=1
+  if (new URLSearchParams(window.location.search).get('error')) {
+    document.getElementById('errorMsg').classList.add('show');
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,215 @@
+{
+  "patterns": [
+    {
+      "id": "aa3e4598-6b99-4537-bdc2-9e14d32df760",
+      "test_id": "",
+      "test_name": "plaintext_secret_in_yaml",
+      "severity": "HIGH",
+      "source": "yaml_scan",
+      "description": "Line 12 of 'profiles.yml': key 'password' appears to contain a plaintext secret ('{{ env_v…'). Use environment variables or a secrets manager instead.",
+      "remediation": "Move this credential out of the YAML file. Reference it via an environment variable (e.g. `password: {{ env_var('DB_PASSWORD') }}`), a secrets manager (AWS Secrets Manager, HashiCorp Vault, Azure Key Vault), or a CI/CD secret (GitHub Actions secrets, Kubernetes Secrets). Never commit credentials to version control.",
+      "filename": "profiles.yml",
+      "occurrences": 5,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-02T01:08:12.446964+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a",
+        "9109e4c0-2bfe-4e38-88f9-42d1a78fbf2b"
+      ],
+      "promoted": true,
+      "promoted_to": "rule_auto_plaintext_secret_in_yaml"
+    },
+    {
+      "id": "a8629079-af0c-4d86-877d-a38a7b035ad6",
+      "test_id": "",
+      "test_name": "env_var_credentials_exposure",
+      "severity": "HIGH",
+      "source": "claude",
+      "description": "Database and schema names are sourced from environment variables (SNOWFLAKE_DATABASE, ORACLE_DATABASE, etc.) without validation. If these environment variables contain connection strings or credentials, they could be logged or exposed in dbt artifacts, compiled SQL, and query history.",
+      "remediation": "Use dbt profiles.yml for database/schema configuration instead of inline env_var() calls. If env_var must be used, ensure the variables contain only resource names (not credentials) and validate/sanitize them. Review dbt logs and compiled SQL to ensure no credential leakage.",
+      "filename": "models/staging/sources.yml",
+      "occurrences": 1,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-01T14:55:06.543583+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a"
+      ]
+    },
+    {
+      "id": "20b3339f-b57a-4e29-a41b-3c581ea3c9c4",
+      "test_id": "",
+      "test_name": "sql_injection_post_hook",
+      "severity": "HIGH",
+      "source": "claude",
+      "description": "The post-hook UPDATE statement directly interpolates a dbt ref() in the WHERE clause without proper escaping. If the ref() target name or the join condition contains malicious content, it could lead to SQL injection. The join on 'src.existing_loan_status_key' and 'src.loan_change_type' uses column references from a subquery without sanitization.",
+      "remediation": "Avoid dynamic SQL in post-hooks when possible. Use dbt's incremental materialization with proper merge logic instead. If post-hooks are required, validate that all interpolated values are from trusted dbt-managed objects and use fully-qualified table names with schema qualification.",
+      "filename": "models/marts/dim_loan_status_expire.sql",
+      "occurrences": 1,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-01T14:55:06.543583+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a"
+      ]
+    },
+    {
+      "id": "752686d5-2667-4954-b7fb-bd24a930d87c",
+      "test_id": "",
+      "test_name": "unsafe_var_default_code_execution",
+      "severity": "MEDIUM",
+      "source": "claude",
+      "description": "The etl_batch_id uses a default value with generate_uuid() which appears to be a function call. In dbt, if this is intended as a Jinja expression, it should use proper syntax. If this is SQL, it may execute arbitrary code. The var() default 'generate_uuid()' is ambiguous and could be interpreted as SQL injection if not properly handled.",
+      "remediation": "Use dbt's built-in functions or explicit SQL functions. Change to {{ var('etl_batch_id', dbt_utils.generate_surrogate_key([]) ) }} or use database-native UUID generation (e.g., UUID() in Snowflake). Remove the string 'generate_uuid()' as it will be treated as a literal string, not a function call.",
+      "filename": "models/marts/agg_portfolio_summary.sql",
+      "occurrences": 1,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-01T14:55:06.543583+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a"
+      ]
+    },
+    {
+      "id": "aa70112e-0fa9-4df6-81b7-6f2c3c37c3ac",
+      "test_id": "",
+      "test_name": "python_code_execution_in_config",
+      "severity": "MEDIUM",
+      "source": "claude",
+      "description": "The etl_batch_id default value uses Python's datetime module directly in Jinja: modules.datetime.datetime.utcnow().isoformat(). This executes Python code at compile time and could be a security risk if the config file is modified by untrusted sources or if the environment is compromised.",
+      "remediation": "Use dbt's run_started_at variable instead: {{ env_var('ETL_BATCH_ID', run_started_at.strftime('%Y%m%d%H%M%S')) }}. This avoids direct Python execution and uses dbt's built-in timestamp. Alternatively, always set ETL_BATCH_ID as an environment variable and remove the default.",
+      "filename": "dbt_project.yml",
+      "occurrences": 1,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-01T14:55:06.543583+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a"
+      ]
+    },
+    {
+      "id": "b5c5976b-24e0-4c63-9190-74cc48202412",
+      "test_id": "",
+      "test_name": "incomplete_truncation_potential_data_loss",
+      "severity": "LOW",
+      "source": "claude",
+      "description": "The file appears to be truncated (ends with incomplete CASE statement '... else lc.borrower_fico\n                end\n            ) >= 780 then 'SUPER_PRIME'\n            when coalesce(...then lc.coborro'). This suggests the code may be incomplete, which could lead to SQL syntax errors or unintended logic if the truncation occurred during conversion.",
+      "remediation": "Review the complete source file for models/intermediate/int_loans_enriched.sql. Ensure all CASE statements, subqueries, and logic blocks are complete. Verify the auto-generated code didn't lose critical business logic during conversion.",
+      "filename": "models/intermediate/int_loans_enriched.sql",
+      "occurrences": 1,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-01T14:55:06.543583+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a"
+      ]
+    },
+    {
+      "id": "dce5bbdc-d6fa-4f68-ac28-b3d95c0b5712",
+      "test_id": "",
+      "test_name": "timestamp_function_injection_risk",
+      "severity": "LOW",
+      "source": "claude",
+      "description": "The post-hook uses current_timestamp() as a function call in the UPDATE statement. While typically safe, if the database allows function redefinition or if there's a custom current_timestamp function in the schema, this could execute unexpected code.",
+      "remediation": "Use fully-qualified function names (e.g., DATABASE.SCHEMA.current_timestamp()) or use dbt's run_started_at variable converted to SQL. Review database permissions to ensure function definitions cannot be overridden by non-admin users.",
+      "filename": "models/marts/dim_loan_status_expire.sql",
+      "occurrences": 1,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-01T14:55:06.543583+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a"
+      ]
+    },
+    {
+      "id": "5d1b8786-2059-42cd-bee2-b101a7529223",
+      "test_id": "",
+      "test_name": "optional_schema_default_risk",
+      "severity": "LOW",
+      "source": "claude",
+      "description": "The reference source uses env_var with a default value: env_var('REFERENCE_SCHEMA', 'REFERENCE'). If the environment variable is not set, it defaults to 'REFERENCE'. If this schema doesn't exist or contains malicious views/tables, queries could fail or return unexpected data.",
+      "remediation": "Remove the default value and make REFERENCE_SCHEMA a required environment variable: env_var('REFERENCE_SCHEMA'). This ensures explicit configuration and prevents accidental misrouting. Add validation in CI/CD to verify all required environment variables are set.",
+      "filename": "models/staging/sources.yml",
+      "occurrences": 1,
+      "first_seen": "2026-03-01T14:55:06.543583+00:00",
+      "last_seen": "2026-03-01T14:55:06.543583+00:00",
+      "job_ids": [
+        "3bf7993d-acb3-4a74-ab97-685295fd100a"
+      ]
+    },
+    {
+      "id": "e731b92e-e931-4d44-aa33-7fb9b0c3342e",
+      "test_id": "",
+      "test_name": "insecure_oracle_connection_protocol",
+      "severity": "HIGH",
+      "source": "claude",
+      "description": "Oracle connection protocol is set to 'tcps' but no explicit SSL/TLS verification configuration is present. Oracle's tcps protocol should be accompanied by explicit wallet configuration and certificate validation settings to ensure the connection is truly secure and prevents MITM attacks.",
+      "remediation": "Add explicit SSL verification parameters to the Oracle connection config such as 'ssl_server_cert_dn' or 'ssl_server_dn_match=true' to ensure certificate validation occurs. Verify that wallet files contain proper CA certificates and that the connection enforces certificate chain validation.",
+      "filename": "profiles.yml",
+      "occurrences": 1,
+      "first_seen": "2026-03-02T01:08:12.446964+00:00",
+      "last_seen": "2026-03-02T01:08:12.446964+00:00",
+      "job_ids": [
+        "9109e4c0-2bfe-4e38-88f9-42d1a78fbf2b"
+      ]
+    },
+    {
+      "id": "d7b8f362-b0b7-414d-9c38-dcd756c804f0",
+      "test_id": "",
+      "test_name": "potential_sql_injection_in_macro_call",
+      "severity": "MEDIUM",
+      "source": "claude",
+      "description": "The validate_etl_batch_id macro is called with var('etl_batch_id') which comes from env_var('ETL_BATCH_ID'). While the macro does perform character validation, it outputs the raw batch_id value in error messages which could be logged. If an attacker controls ETL_BATCH_ID, they could inject malicious content into logs.",
+      "remediation": "In validate_etl_batch_id macro, sanitize the batch_id value before including it in error messages. Truncate or escape special characters to prevent log injection attacks. Consider using a hash or shortened representation in error messages instead of the full value.",
+      "filename": "models/marts/fact_orders.sql",
+      "occurrences": 1,
+      "first_seen": "2026-03-02T01:08:12.446964+00:00",
+      "last_seen": "2026-03-02T01:08:12.446964+00:00",
+      "job_ids": [
+        "9109e4c0-2bfe-4e38-88f9-42d1a78fbf2b"
+      ]
+    },
+    {
+      "id": "20fccd00-3bd6-4d08-b5c9-483db9d27b82",
+      "test_id": "",
+      "test_name": "log_injection_in_error_messages",
+      "severity": "MEDIUM",
+      "source": "claude",
+      "description": "The macro includes unsanitized user input (batch_id_str) directly in exception error messages. If ETL_BATCH_ID contains newlines or control characters, it could inject malicious content into log files, potentially enabling log poisoning or exploitation of log aggregation systems.",
+      "remediation": "Sanitize batch_id_str before including in error messages by escaping or removing control characters and newlines. Use Jinja's 'escape' filter or implement a sanitization function that removes characters outside the expected alphanumeric and hyphen set before concatenating into error strings.",
+      "filename": "macros/validate_etl_batch_id.sql",
+      "occurrences": 1,
+      "first_seen": "2026-03-02T01:08:12.446964+00:00",
+      "last_seen": "2026-03-02T01:08:12.446964+00:00",
+      "job_ids": [
+        "9109e4c0-2bfe-4e38-88f9-42d1a78fbf2b"
+      ]
+    },
+    {
+      "id": "d0392b37-a58f-4f62-baa0-94757aafb36a",
+      "test_id": "",
+      "test_name": "log_injection_in_tax_rate_error",
+      "severity": "MEDIUM",
+      "source": "claude",
+      "description": "The tax_rate value is included directly in error messages without sanitization. While tax_rate is expected to be numeric, if an attacker can control the dbt_project.yml or override vars via CLI with string values containing control characters, it could enable log injection.",
+      "remediation": "Format the tax_rate_float value explicitly as a number in error messages using string formatting that strips non-numeric characters, or validate that the conversion to float succeeded before including in messages. Use format strings like '{:.4f}'.format(tax_rate_float) to ensure only numeric output.",
+      "filename": "macros/validate_tax_rate.sql",
+      "occurrences": 1,
+      "first_seen": "2026-03-02T01:08:12.446964+00:00",
+      "last_seen": "2026-03-02T01:08:12.446964+00:00",
+      "job_ids": [
+        "9109e4c0-2bfe-4e38-88f9-42d1a78fbf2b"
+      ]
+    },
+    {
+      "id": "1bf7bcee-6192-4bc8-9772-3e373aa63787",
+      "test_id": "",
+      "test_name": "hardcoded_business_logic_value",
+      "severity": "LOW",
+      "source": "claude",
+      "description": "The default tax_rate value 0.085 is hardcoded in the project configuration. While documented as replaceable, if this file is version-controlled and used directly in production without override, it could lead to incorrect tax calculations if the rate changes. This is a business logic risk rather than a direct security vulnerability.",
+      "remediation": "Consider removing the default value and making tax_rate a required runtime parameter, or implement a more robust configuration management system where tax rates are fetched from a secure configuration service or database table. Document clearly that this value MUST be overridden for production use.",
+      "filename": "dbt_project.yml",
+      "occurrences": 1,
+      "first_seen": "2026-03-02T01:08:12.446964+00:00",
+      "last_seen": "2026-03-02T01:08:12.446964+00:00",
+      "job_ids": [
+        "9109e4c0-2bfe-4e38-88f9-42d1a78fbf2b"
+      ]
+    }
+  ]
+}

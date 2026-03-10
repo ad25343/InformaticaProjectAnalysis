@@ -1,0 +1,92 @@
+rules:
+- id: rule_creds_001
+  severity: CRITICAL
+  category: credentials
+  description: Never hardcode passwords, API keys, tokens, or secrets in generated
+    code.
+  guidance: Use os.environ.get('SECRET_NAME') or a secrets-manager client. Never assign
+    literals like password='abc123' or api_key='sk-...'.
+  enabled: true
+- id: rule_sql_001
+  severity: HIGH
+  category: injection
+  description: Never construct SQL queries by string concatenation or f-strings with
+    user/external data.
+  guidance: 'Use parameterised queries: cursor.execute(''SELECT * FROM t WHERE id
+    = ?'', (val,)). For SQLAlchemy use ORM or text() with bindparams.'
+  enabled: true
+- id: rule_exec_001
+  severity: HIGH
+  category: code-execution
+  description: Avoid eval(), exec(), and compile() on dynamic or external input.
+  guidance: If dynamic evaluation is genuinely required, use ast.literal_eval() for
+    safe literal expressions only.
+  enabled: true
+- id: rule_subprocess_001
+  severity: HIGH
+  category: injection
+  description: Never pass unsanitised external data to subprocess, os.system, or shell=True.
+  guidance: Use subprocess.run([...], shell=False) with a fixed command list. Validate
+    and whitelist any user-supplied arguments before passing them.
+  enabled: true
+- id: rule_xml_001
+  severity: HIGH
+  category: xxe
+  description: Disable DTD loading and external entity resolution when parsing XML.
+  guidance: Use defusedxml.ElementTree or configure lxml with resolve_entities=False,
+    no_network=True, forbid_dtd=True.
+  enabled: true
+- id: rule_zip_001
+  severity: HIGH
+  category: path-traversal
+  description: Validate ZIP entry paths before extraction to prevent Zip Slip attacks.
+  guidance: Resolve each entry to an absolute path and confirm it starts with the
+    intended extraction directory. Reject entries containing '..' or absolute paths.
+  enabled: true
+- id: rule_assert_001
+  severity: MEDIUM
+  category: logic
+  description: Do not use assert statements as security or input-validation guards.
+  guidance: 'assert is stripped by Python''s -O optimisation flag. Replace with explicit
+    if/raise: if not condition: raise ValueError(''...'')'
+  enabled: true
+- id: rule_hash_001
+  severity: MEDIUM
+  category: cryptography
+  description: Do not use MD5 or SHA-1 for security-sensitive hashing (passwords,
+    tokens, signatures).
+  guidance: Use hashlib.sha256() or higher for general hashing. For passwords use
+    bcrypt, scrypt, or argon2 via a dedicated library.
+  enabled: true
+- id: rule_random_001
+  severity: MEDIUM
+  category: cryptography
+  description: Do not use the random module for security-sensitive values (tokens,
+    session IDs, salts).
+  guidance: Use secrets.token_hex(), secrets.token_urlsafe(), or os.urandom() for
+    cryptographically secure random values.
+  enabled: true
+- id: rule_logging_001
+  severity: MEDIUM
+  category: data-exposure
+  description: 'Never log sensitive values: passwords, tokens, PII, or connection
+    strings.'
+  guidance: Mask or omit sensitive fields before logging. Use a log filter or structured
+    logging with explicit field exclusions.
+  enabled: true
+- id: rule_tls_001
+  severity: MEDIUM
+  category: transport
+  description: Do not disable TLS/SSL certificate verification.
+  guidance: Never set verify=False in requests or ssl_context.check_hostname=False.
+    Use proper CA bundles for internal certificates instead.
+  enabled: true
+- id: rule_tempfile_001
+  severity: LOW
+  category: file-handling
+  description: Use tempfile.NamedTemporaryFile or tempfile.mkstemp for temporary files;
+    never predictable paths.
+  guidance: Predictable /tmp/myapp_temp.txt paths are vulnerable to symlink and race-condition
+    attacks. The tempfile module creates files with random names and correct permissions
+    automatically.
+  enabled: true

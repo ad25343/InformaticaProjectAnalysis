@@ -1,0 +1,46 @@
+# ── Secrets — never commit ────────────────────────────────────────────────────
+app/.env
+.env
+
+# ── Runtime data — machine-specific, regenerated on each run ─────────────────
+app/data/
+app/logs/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+
+# ── Test / coverage artifacts ────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.log
+*.tmp
+
+# ── Project-specific ignores ─────────────────────────────────────────────────
+informatica_conversion_tool_prompt_v4.md

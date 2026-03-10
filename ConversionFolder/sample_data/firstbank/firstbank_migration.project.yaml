@@ -69,12 +69,10 @@ review:
   auto_notify: true                                     # send notification when strategy is ready
 
 # ----------------------------------------------------------------------------
-# Conversion: handoff to InformaticaConversion
+# Output: where and how to deliver the strategy
 # ----------------------------------------------------------------------------
-conversion:
-  api_endpoint: "http://localhost:8090"                  # InformaticaConversion instance
-  batch_concurrency: 3
-  output_dir: "/output/firstbank/"                      # for offline handoff (if no API)
+output:
+  output_dir: "/output/firstbank/"
   strategy_format: "json"                               # json | yaml
 
 # ----------------------------------------------------------------------------
@@ -86,4 +84,3 @@ notifications:
     on_analysis_complete: true
     on_strategy_ready: true
     on_review_approved: true
-    on_conversion_complete: true

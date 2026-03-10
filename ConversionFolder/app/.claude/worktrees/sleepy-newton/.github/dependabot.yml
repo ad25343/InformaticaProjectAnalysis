@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # Python dependencies (pip)
+  - package-ecosystem: "pip"
+    directory: "/app"        # Looks for requirements.txt in /app
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    # Open a max of 5 PRs at once to avoid noise
+    open-pull-requests-limit: 5
+    # Group all patch updates into a single PR to reduce churn
+    groups:
+      patch-updates:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    # Always open individual PRs for major bumps and security advisories
+    ignore: []
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+
+  # GitHub Actions (keep action versions pinned and up to date)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"

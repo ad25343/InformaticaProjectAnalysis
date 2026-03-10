@@ -1,0 +1,177 @@
+name: Security Scan
+
+on:
+  push:
+    branches: ["main"]
+    # Only trigger when code or dependencies actually change.
+    # Doc-only, config-only, and workflow-only pushes are skipped — no email.
+    paths:
+      - "app/**/*.py"
+      - "app/requirements.txt"
+      - ".github/workflows/security.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "app/**/*.py"
+      - "app/requirements.txt"
+  schedule:
+    # Run weekly on Mondays at 07:00 UTC — catches newly disclosed CVEs
+    # even when there are no code changes
+    - cron: "0 7 * * 1"
+  workflow_dispatch:  # Allow manual runs from the Actions tab
+
+jobs:
+  # ── 1. Dependency vulnerability scan ────────────────────────────────────────
+  dependency-audit:
+    name: Dependency Audit (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt pip-audit
+
+      - name: Run pip-audit
+        # --strict: exit 1 if any vulnerability is found
+        # --fix:    show which upgrade would fix each finding (informational)
+        # --output: machine-readable JSON saved as an artifact
+        run: |
+          pip-audit \
+            --requirement app/requirements.txt \
+            --strict \
+            --format json \
+            --output pip-audit-report.json \
+            || (cat pip-audit-report.json && exit 1)
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: pip-audit-report.json
+          retention-days: 30
+
+  # ── 2. Static security analysis (bandit) ────────────────────────────────────
+  bandit-scan:
+    name: Static Analysis (bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bandit
+        run: pip install bandit[toml]
+
+      - name: Run bandit
+        # -r   recursive
+        # -ll  report HIGH and MEDIUM severity only (skip LOW noise)
+        # -ii  report HIGH and MEDIUM confidence only
+        # -x   exclude test files and virtual envs (tests use intentionally unsafe patterns)
+        # --exit-zero on the bandit step itself so we always get a report;
+        # the step below fails the job if any HIGH findings exist.
+        run: |
+          bandit \
+            -r app/backend \
+            -ll -ii \
+            -x app/backend/tests,app/test_security.py \
+            --format json \
+            --output bandit-report.json \
+            || true
+          cat bandit-report.json
+
+      - name: Fail on HIGH severity findings
+        run: |
+          HIGH=$(python3 -c "
+          import json, sys
+          data = json.load(open('bandit-report.json'))
+          highs = [r for r in data.get('results', []) if r.get('issue_severity') == 'HIGH']
+          print(len(highs))
+          for r in highs:
+              print(f\"  {r['filename']}:{r['line_number']} — {r['test_id']} {r['issue_text']}\")
+          ")
+          echo "HIGH severity findings: $HIGH"
+          if [ "$HIGH" -gt 0 ]; then exit 1; fi
+
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          retention-days: 30
+
+  # ── 3. Unit tests — deterministic security utilities ────────────────────────
+  security-unit-tests:
+    name: Security Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r app/requirements.txt bandit
+
+      - name: Run test_security.py
+        working-directory: app
+        run: python3 test_security.py -v
+
+  # ── 4. Secrets detection (truffleHog) ───────────────────────────────────────
+  secrets-scan:
+    name: Secrets Scan (truffleHog)
+    runs-on: ubuntu-latest
+    # Only scan on PRs and pushes to main; skip scheduled runs
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so truffleHog can diff
+
+      - name: Run truffleHog (filesystem scan)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+  # ── 5. Failure summary — only runs when a prior job failed ──────────────────
+  # GitHub sends email for every completed workflow run.  By watching only this
+  # job's result you can filter your inbox: "Security Scan / Failure Summary"
+  # only appears when something actually broke.
+  notify-on-failure:
+    name: Failure Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-audit, bandit-scan, security-unit-tests, secrets-scan]
+    if: |
+      always() && (
+        needs.dependency-audit.result   == 'failure' ||
+        needs.bandit-scan.result        == 'failure' ||
+        needs.security-unit-tests.result == 'failure' ||
+        needs.secrets-scan.result       == 'failure'
+      )
+    steps:
+      - name: Summarise failures
+        run: |
+          echo "## Security Scan — FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Dependency Audit  | ${{ needs.dependency-audit.result }}    |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bandit Scan       | ${{ needs.bandit-scan.result }}         |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Tests    | ${{ needs.security-unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secrets Scan      | ${{ needs.secrets-scan.result }}        |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Check the failed job's logs above for details." >> $GITHUB_STEP_SUMMARY
+          exit 1   # Fail this job so the overall workflow is marked red

@@ -1,7 +1,6 @@
 # InformaticaProjectAnalysis — Design Document
 
 **Status:** Ideation
-**Parent project:** InformaticaConversion (v2.15.0)
 **Author:** ad25343
 **Created:** 2026-03-09
 
@@ -9,17 +8,17 @@
 
 ## 1. Problem Statement
 
-The InformaticaConversion tool (v2.15.0) converts Informatica PowerCenter mappings
-one at a time, in complete isolation. Each mapping produces a fully self-contained
-output with no awareness of other mappings in the estate.
+Informatica PowerCenter estates are typically converted mapping by mapping, in
+complete isolation. Each mapping produces a fully self-contained output with no
+awareness of other mappings in the estate.
 
 This means:
-- If 10 mappings all do truncate-and-load with only the table name differing, the tool
-  produces 10 separate files instead of one parameterized template + config.
+- If 10 mappings all do truncate-and-load with only the table name differing, they
+  produce 10 separate files instead of one parameterized template + config.
 - If 8 mappings share the same SCD2 pattern, each gets its own copy of the SCD2 logic.
 - Shared source tables are redefined independently in every output.
-- There is no dependency graph — the tool cannot tell you which mappings must run before others.
-- There is no project-level structure — no unified `sources.yml`, no shared macros, no
+- There is no dependency graph — no way to tell which mappings must run before others.
+- There is no project-level structure — no unified sources, no shared macros, no
   layered model organization.
 
 InformaticaProjectAnalysis solves this by analyzing an entire Informatica estate
@@ -71,7 +70,6 @@ per-mapping technical detail.
 
 ```
 Input: N mapping XMLs + optional workflow XMLs + parameter files
-(same file types the conversion tool already accepts)
     │
     ▼
 Phase 1 — Discovery (deterministic parsing + AI-assisted interpretation)
@@ -100,11 +98,9 @@ Phase 4 — Human Gate
     Confirm, adjust, or override groupings.
     │
     ▼
-Phase 5 — Handoff to InformaticaConversion
-    Approved strategy feeds into the conversion pipeline.
-    Pattern groups → template + config conversion.
-    Unique mappings → individual conversion.
-    Conversion agent knows about shared assets and emits proper references.
+Phase 5 — Strategy Delivery
+    Approved strategy available as JSON, PDF, and Excel downloads.
+    Strategy JSON can be consumed by any downstream conversion workflow.
 ```
 
 ---
@@ -113,7 +109,7 @@ Phase 5 — Handoff to InformaticaConversion
 
 ### 5.1 Deterministic Parsing (no AI)
 
-For each of the N mappings, the existing InformaticaConversion parser extracts:
+For each of the N mappings, the parser extracts:
 - Transformation types and their order (the "spine")
 - Source tables and their connection attributes (DBDNAME)
 - Target tables and their connection attributes
@@ -225,7 +221,7 @@ Naming conventions are one optional hint that gets folded in if present, not rel
 
 ### 7.1 Format
 
-Two deliverables:
+Three deliverables:
 
 **PDF** — human-readable strategy document with two layers:
 - Leadership summary (page 1): mapping count, pattern group count, unique mapping count,
@@ -233,12 +229,16 @@ Two deliverables:
 - Tech lead detail (remaining pages): per-group evidence, dependency DAG visualization,
   shared asset catalogue, per-mapping assignments with confidence levels
 
-**Excel workbook** — machine-readable / reviewable data:
+**Excel workbook** — reviewable tabular data:
 - Sheet 1: Pattern Groups (group name, member mappings, spine, variation notes, confidence)
 - Sheet 2: Dependency Graph (source mapping, target mapping, edge type, shared table)
 - Sheet 3: Shared Assets (table/expression, referenced by which mappings, recommendation)
 - Sheet 4: Per-Mapping Assignments (mapping name, assigned group, confidence, flags, notes)
 - Sheet 5: Risk Flags (mapping name, flag type, severity, description)
+
+**Strategy JSON** — machine-readable format. Schema versioned. Contains pattern groups
+with members, unique mappings with reasons, shared assets, dependency DAG, and execution
+order (DAG topologically sorted into parallel stages).
 
 ### 7.2 Honest Uncertainty
 
@@ -255,32 +255,28 @@ that need a human to confirm, and here are 4 I couldn't read at all."
 
 ## 8. Phase 4 — Human Gate
 
-The strategy is reviewed in a standalone web UI (same architectural pattern as
-InformaticaConversion). Tech leads can:
+The strategy is reviewed in the standalone web UI. Tech leads can:
 - View the full strategy document (PDF rendering in UI)
 - Browse pattern groups and their member mappings
 - View the dependency graph
 - Confirm or override individual mapping-to-group assignments
 - Add notes per mapping or per group
-- Approve the strategy (triggers handoff to conversion) or reject (request re-analysis)
+- Approve the strategy or reject (request re-analysis)
 
 ---
 
-## 9. Phase 5 — Handoff to InformaticaConversion
+## 9. Phase 5 — Strategy Delivery
 
-The approved strategy integrates with the existing v2.15.0 conversion pipeline:
+The approved strategy is available in three formats:
 
-- Pattern groups trigger **template + config** conversion mode (new)
-- Unique mappings trigger **individual** conversion mode (existing)
-- Shared asset catalogue is passed as context so the conversion agent emits proper
-  `ref()` / `source()` calls instead of inline duplication
-- Dependency DAG drives execution order for batch conversion
-- Per-mapping hints from the strategy (flags, notes, overrides) are injected into
-  each mapping's conversion prompt
+- **JSON** — machine-readable, schema-versioned. Suitable as input to any downstream
+  conversion tool or workflow.
+- **PDF** — human-readable strategy document.
+- **Excel** — reviewable tabular data.
 
-This is an integration point between InformaticaProjectAnalysis and
-InformaticaConversion — the two tools share a defined interface but remain
-separate codebases.
+The strategy JSON is the canonical output. It contains: pattern groups with members
+and externalized parameters, unique mappings with reasons, shared assets, dependency
+DAG, and execution order.
 
 ---
 
@@ -288,11 +284,11 @@ separate codebases.
 
 InformaticaProjectAnalysis is a standalone application with its own:
 - Web UI (for uploading project configs, viewing strategy, human review gate)
-- REST API (for programmatic access and integration with InformaticaConversion)
+- REST API (for programmatic access)
 - Database (job tracking, strategy persistence, review decisions)
 - PDF + Excel generation pipeline
 
-It follows the same architectural patterns as InformaticaConversion:
+Architecture:
 - FastAPI backend (port 8090)
 - SSE progress streaming
 - SQLite persistence
@@ -337,9 +333,8 @@ review:
     name: "Mike Johnson"
     email: "mike.johnson@firstbank.com"
 
-conversion:
-  api_endpoint: "http://localhost:8090"
-  batch_concurrency: 3
+output:
+  strategy_format: "json"
   output_dir: "/output/firstbank/"
 
 notifications:
@@ -348,7 +343,6 @@ notifications:
     on_analysis_complete: true
     on_strategy_ready: true
     on_review_approved: true
-    on_conversion_complete: true
 ```
 
 Source types supported:
@@ -364,8 +358,7 @@ folder/repo path. Watches the analysis run in real time. Reviews the strategy
 in the browser. Approves or overrides.
 
 **Watcher** — tool polls a directory for `*.project.yaml` files. When one appears
-or changes, it triggers analysis automatically. Same pattern as the v2.14/v2.15
-manifest watcher and scheduler in InformaticaConversion.
+or changes, it triggers analysis automatically.
 
 **CI/CD** — a pipeline step drops the project config and triggers analysis via
 API. Strategy document posted as a PR artifact or comment. Review happens in
@@ -381,111 +374,30 @@ for development and testing of the analysis pipeline.
 
 ---
 
-## 11. Integration Contract (from codebase analysis)
+## 11. Strategy JSON Schema
 
-This section describes the concrete integration points based on the actual
-InformaticaConversion v2.15.0 codebase.
-
-### 11.1 Parser Reuse
-
-The existing `parser_agent.parse_xml()` is directly reusable. It returns:
-
-```python
-(ParseReport, graph_dict)
-
-# graph_dict structure:
-{
-    "mappings": [
-        {
-            "name": str,
-            "description": str,
-            "transformations": [
-                {
-                    "name": str,
-                    "type": str,           # "Expression", "Lookup", "Aggregator", etc.
-                    "reusable": bool,
-                    "ports": [{"name", "datatype", "porttype", "expression", "default"}],
-                    "expressions": [{"port", "expression"}],
-                    "table_attribs": {"Lookup Table Name": str, "Lookup condition": str, ...}
-                }
-            ],
-            "connectors": [
-                {"from_instance", "from_field", "to_instance", "to_field"}
-            ],
-            "parameters": [{"name", "datatype", "default"}],
-            "instance_map": {"instance_name": "transformation_name"},
-            "mapplet_expansions": [str]
-        }
-    ],
-    "sources": [{"name", "db_type", "owner", "fields": [{"name", "datatype", "length"}]}],
-    "targets": [{"name", "db_type", "owner", "fields": [{"name", "datatype", "length"}]}],
-    "workflows": [{"name", "tasks": [{"name", "type"}]}],
-    "parameters": [{"name", "value"}],
-    "connections": [],
-    "mapplets": [{"name", "source"}]
-}
-```
-
-InformaticaProjectAnalysis calls `parse_xml()` once per mapping XML and aggregates
-all N results into the estate-level graph. No changes to the parser are needed.
-
-### 11.2 Key Fields for Pattern Grouping
-
-From each mapping's graph entry, the fingerprinting engine uses:
-
-- `transformations[].type` — the spine (ordered sequence of transformation types)
-- `transformations[].table_attribs` — especially `"Lookup Table Name"` for dependency detection
-- `transformations[].expressions` — expression bodies for pattern matching
-- `connectors` — the wiring topology (from_instance → to_instance edges)
-- `instance_map` — maps instance names to transformation names (needed for mapplet detection)
-
-From the estate-level `sources[]` and `targets[]`:
-- `name` + `db_type` + `owner` — identify shared tables across mappings
-- Cross-reference target names with Lookup `table_attribs["Lookup Table Name"]` for dependency edges
-
-### 11.3 Conversion Agent Integration
-
-The conversion agent (`conversion_agent.py`) uses a prompt template with injection points:
-
-```python
-CONVERSION_PROMPT = """Convert the Informatica mapping documented below to {stack}.
-
-{security_context}
-## Stack Assignment Rationale
-{rationale}
-{approved_fixes_section}{flag_handling_section}{manifest_override_section}
-## Full Mapping Documentation (your source of truth)
-{documentation_md}
-...
-"""
-```
-
-The strategy handoff adds a new injection section: `{project_strategy_section}` containing:
-
-- Which pattern group this mapping belongs to (or "unique/individual")
-- For pattern groups: the template specification, externalized parameters, config structure
-- Shared asset references: "use `ref('dim_customer')` not inline lookup definition"
-- Dependency context: "this mapping depends on dim_customer and dim_account being loaded first"
-- Any tech lead overrides from the human review gate
-
-### 11.4 Strategy Handoff Format
-
-The approved strategy is a JSON file that InformaticaConversion consumes:
+The approved strategy is a JSON file — the canonical machine-readable output.
 
 ```json
 {
     "strategy_version": 1,
     "estate_name": "FirstBank_Q1_Migration",
     "analysis_job_id": "uuid",
-    "approved_at": "ISO datetime",
-    "approved_by": "reviewer_name",
+    "analyzed_at": "ISO datetime",
+
+    "summary": {
+        "total_mappings": 50,
+        "pattern_groups": 8,
+        "template_candidates": 36,
+        "unique_mappings": 14,
+        "scope_reduction_pct": 56
+    },
 
     "pattern_groups": [
         {
             "group_id": "trunc_load_01",
             "group_name": "Truncate & Load",
             "spine": "SQ → EXP → TARGET",
-            "conversion_mode": "template",
             "members": [
                 {
                     "mapping_name": "m_load_customer",
@@ -510,7 +422,6 @@ The approved strategy is a JSON file that InformaticaConversion consumes:
     "unique_mappings": [
         {
             "mapping_name": "m_complex_reconciliation",
-            "conversion_mode": "individual",
             "reason": "Tier 3 — fundamentally different structure, no pattern match",
             "risk_flags": ["CUSTOM_SQL_OVERRIDE", "5_JOINER_TRANSFORMATIONS"]
         }
@@ -521,7 +432,7 @@ The approved strategy is a JSON file that InformaticaConversion consumes:
             "table_name": "DIM_CUSTOMER",
             "referenced_by": ["m_fact_daily_txn", "m_fact_loan_origination", "m_agg_monthly"],
             "reference_type": "lookup",
-            "recommendation": "shared model — use ref('dim_customer')"
+            "recommendation": "shared reference — referenced by 3 mappings"
         }
     ],
 
@@ -535,31 +446,26 @@ The approved strategy is a JSON file that InformaticaConversion consumes:
         ["m_dim_customer", "m_dim_account"],
         ["m_fact_daily_txn", "m_fact_loan_origination"],
         ["m_agg_monthly_summary"]
-    ]
+    ],
+
+    "review": {
+        "approved_at": "ISO datetime",
+        "approved_by": "reviewer_name",
+        "overrides": [],
+        "notes": ""
+    }
 }
 ```
 
-### 11.5 Two Conversion Modes
-
-**Template mode** (new — for pattern groups): The conversion agent receives the group's
-template specification and all member mappings' parameter values. It produces one
-parameterized template file + one config file (YAML/JSON) with N entries. The template
-uses variables or config lookups where the members differ.
-
-**Individual mode** (existing): The conversion agent operates exactly as it does today
-in v2.15.0 — one mapping in, one standalone output.
-
-The `conversion_mode` field in the strategy JSON determines which mode is used per mapping.
+Schema versioned via `strategy_version` field so the format can evolve.
 
 ---
 
-## 12. Separation of Concerns — Analysis vs. Conversion
+## 12. Separation of Concerns
 
-The analysis tool **observes and surfaces**. The conversion tool **decides and produces**.
-
-The analysis tool does NOT prescribe target stacks, warehouses, or orchestration
-platforms. Those decisions belong to the conversion tool's stack assignment logic
-(Step 6) and the humans reviewing the strategy.
+The analysis tool **observes and surfaces**. It does NOT prescribe target stacks,
+warehouses, or orchestration platforms. Those decisions belong to the humans
+reviewing the strategy and whatever conversion tools they choose.
 
 What the analysis tool DOES surface — characteristics that inform downstream decisions:
 
@@ -570,7 +476,7 @@ What the analysis tool DOES surface — characteristics that inform downstream d
 - Parallelism potential: "Stage 2 has 3 independent tracks that can run concurrently"
 - Complexity distribution: "15 simple, 20 medium, 15 complex"
 
-### 12.2 Transformation Characteristics (relevant to stack decisions)
+### 12.2 Transformation Characteristics
 
 - "Pattern Group 4 (SCD2) requires merge/upsert or snapshot semantics"
 - "Pattern Group 7 (risk/regulatory) involves 3-source joins with complex expressions"
@@ -578,64 +484,28 @@ What the analysis tool DOES surface — characteristics that inform downstream d
 - "1 mapping uses Union transformation across 3 heterogeneous sources"
 - "2 mappings contain custom SQL overrides that bypass the transformation layer"
 
-### 12.3 Orchestration Characteristics (relevant to execution planning)
+### 12.3 Orchestration Characteristics
 
 - The dependency DAG itself — which mappings must run before others
 - Stage boundaries — where parallelism is safe vs. where serialization is required
 - Error propagation paths — if mapping A fails, which downstream mappings are affected
 - Volume indicators — source table sizes where available from metadata
 
-### 12.4 Risk Characteristics (relevant to review and planning)
+### 12.4 Risk Characteristics
 
 - Unmapped expressions, missing mapplet definitions, custom SQL
 - Confidence distribution across groupings
 - Mappings that resist classification
 - Patterns the tool couldn't interpret
 
-The strategy document presents all of this as evidence for humans and the conversion
-tool to act on — never as prescriptive decisions about technology choices.
-
-### 12.5 Current Target Stacks (InformaticaConversion v2.15.0)
-
-The conversion tool currently supports: dbt, PySpark, Python (Pandas).
-
-The analysis tool is agnostic to this list. If the conversion tool adds support for
-additional targets in the future (raw SQL, Spark SQL, stored procedures, Airflow DAG
-generation, etc.), the analysis tool's output remains valid — it surfaces structural
-characteristics, not stack-specific recommendations.
+The strategy document presents all of this as evidence for humans to act on — never
+as prescriptive decisions about technology choices.
 
 ---
 
 ## 13. Design Decisions (resolved)
 
-### 13.1 Template + Config Conversion Mode
-
-No new conversion architecture needed. The existing conversion agent receives a richer
-prompt via the `{project_strategy_section}` injection point. For pattern groups, the
-prompt includes all member mappings together with the shared spine highlighted and the
-parameter differences called out. The agent produces two outputs:
-
-- **Template file** — parameterized code with `CONFIG["source_table"]`,
-  `CONFIG["target_table"]`, etc.
-- **Config file** — YAML with one entry per member mapping
-
-Stack-specific implementation:
-- dbt: one `.sql` model with `var()` references + `dbt_project.yml` setting variables per model
-- PySpark: parameterized Python module + config dict loaded from YAML
-- Python/Pandas: same pattern as PySpark
-
-### 13.2 Strategy-to-Conversion Interface
-
-The strategy JSON (schema in Section 11.4) is the contract. Delivered two ways:
-
-- **File**: written to `{output_dir}/{project_name}_strategy.json` on approval.
-  The conversion tool's watcher can pick it up for automated handoff.
-- **API**: POST to the conversion tool's batch endpoint with the strategy attached.
-  Used for interactive and CI/CD modes.
-
-Schema versioned via `strategy_version` field so both tools can evolve independently.
-
-### 13.3 Re-Analysis on Overrides
+### 13.1 Re-Analysis on Overrides
 
 Two tiers of overrides:
 
@@ -648,7 +518,7 @@ Two tiers of overrides:
   output with the overrides as constraints. No full re-parse. Validates that the new
   grouping holds structurally and updates variation tiers and confidence levels.
 
-### 13.4 Incremental Updates
+### 13.2 Incremental Updates
 
 Phase 1 caches parse results keyed by file content hash (SHA-256). When new mappings
 are added or existing ones change:
@@ -665,7 +535,7 @@ Previous human decisions (overrides, confirmations) are preserved unless the
 structural change invalidates them. If a confirmed mapping's XML changed, the
 confirmation is cleared and the mapping is re-evaluated.
 
-### 13.5 UI Design
+### 13.3 UI Design
 
 Three views, same underlying data:
 
@@ -693,13 +563,3 @@ Execution stages highlighted. Critical path shown. Error propagation paths visib
 
 All three views are React components. PDF and Excel exports are generated from
 the same data model that powers the UI.
-
----
-
-## 14. Version Target
-
-This capability would be positioned as part of the v3.0 vision referenced in the
-InformaticaConversion PRD, which mentions "Observability: track conversion success rate,
-time-to-review, and flag frequency across the entire Informatica estate."
-
-InformaticaProjectAnalysis is the foundation for that estate-level visibility.

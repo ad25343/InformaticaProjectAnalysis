@@ -1,0 +1,197 @@
+### ─────────────────────────────────────────────────────────────
+### Informatica Conversion Tool — API test file
+### Use with VS Code REST Client or IntelliJ HTTP Client.
+### Replace YOUR_JOB_ID with the job_id from any upload response.
+### ─────────────────────────────────────────────────────────────
+
+@base = http://localhost:8000
+
+
+### ─────────────────────────────────────────────────────────────
+### UPLOAD (v1.0 — mapping only)
+### ─────────────────────────────────────────────────────────────
+
+### Upload a mapping XML and start the pipeline
+POST {{base}}/api/jobs
+Content-Type: multipart/form-data; boundary=----FormBoundary
+
+------FormBoundary
+Content-Disposition: form-data; name="file"; filename="sample_mapping.xml"
+Content-Type: application/xml
+
+< ./sample_xml/sample_mapping.xml
+------FormBoundary--
+
+
+### ─────────────────────────────────────────────────────────────
+### UPLOAD (v1.1 — mapping + workflow + parameter file)
+### Step 0 runs automatically before Step 1 when extra files are present.
+### ─────────────────────────────────────────────────────────────
+
+### Upload all three files (full v1.1 mode)
+POST {{base}}/api/jobs
+Content-Type: multipart/form-data; boundary=----FormBoundaryFull
+
+------FormBoundaryFull
+Content-Disposition: form-data; name="file"; filename="sample_mapping.xml"
+Content-Type: application/xml
+
+< ./sample_xml/sample_mapping.xml
+------FormBoundaryFull
+Content-Disposition: form-data; name="workflow_file"; filename="sample_workflow.xml"
+Content-Type: application/xml
+
+< ./sample_xml/sample_workflow.xml
+------FormBoundaryFull
+Content-Disposition: form-data; name="parameter_file"; filename="sample_params.txt"
+Content-Type: text/plain
+
+< ./sample_xml/sample_params.txt
+------FormBoundaryFull--
+
+
+### ─────────────────────────────────────────────────────────────
+### JOB STATUS
+### ─────────────────────────────────────────────────────────────
+
+### List all jobs (most recent 50)
+GET {{base}}/api/jobs
+
+### Get a specific job (includes session_parse_report when v1.1 files were uploaded)
+GET {{base}}/api/jobs/YOUR_JOB_ID
+
+### Stream live pipeline progress (Server-Sent Events)
+GET {{base}}/api/jobs/YOUR_JOB_ID/stream
+
+
+### ─────────────────────────────────────────────────────────────
+### LOGS
+### ─────────────────────────────────────────────────────────────
+
+### Get structured JSON log for a job
+GET {{base}}/api/jobs/YOUR_JOB_ID/logs
+
+### Get plain-text log (human readable)
+GET {{base}}/api/jobs/YOUR_JOB_ID/logs?format=text
+
+### Download raw JSONL log file
+GET {{base}}/api/jobs/YOUR_JOB_ID/logs/download
+
+### List log registry (all jobs with their log filenames)
+GET {{base}}/api/logs/registry
+
+
+### ─────────────────────────────────────────────────────────────
+### GATE 1 — Human sign-off (Step 5)
+### ─────────────────────────────────────────────────────────────
+
+### Approve — pipeline continues to Steps 6-10
+POST {{base}}/api/jobs/YOUR_JOB_ID/sign-off
+Content-Type: application/json
+
+{
+  "reviewer_name": "Adoma",
+  "reviewer_role": "Senior Data Engineer",
+  "decision": "APPROVED",
+  "flag_resolutions": [],
+  "notes": "Looks good — proceeding to conversion."
+}
+
+###
+
+### Approve with flag resolution (apply a reviewer-suggested fix)
+POST {{base}}/api/jobs/YOUR_JOB_ID/sign-off
+Content-Type: application/json
+
+{
+  "reviewer_name": "Adoma",
+  "reviewer_role": "Senior Data Engineer",
+  "decision": "APPROVED",
+  "flag_resolutions": [
+    {
+      "flag_id": "flag-001",
+      "action": "resolved",
+      "apply_fix": true,
+      "fix_suggestion": "Use COALESCE(ORDER_AMOUNT, 0) instead of ORDER_AMOUNT to handle NULLs safely"
+    }
+  ],
+  "notes": "Applied NULL-safe fix for ORDER_AMOUNT."
+}
+
+###
+
+### Reject — job is blocked, pipeline does not proceed
+POST {{base}}/api/jobs/YOUR_JOB_ID/sign-off
+Content-Type: application/json
+
+{
+  "reviewer_name": "Adoma",
+  "reviewer_role": "Senior Data Engineer",
+  "decision": "REJECTED",
+  "flag_resolutions": [],
+  "notes": "Mapping logic is incorrect — needs rework before conversion."
+}
+
+
+### ─────────────────────────────────────────────────────────────
+### GATE 2 — Code review sign-off (Step 10)
+### ─────────────────────────────────────────────────────────────
+
+### Approve — marks job COMPLETE
+POST {{base}}/api/jobs/YOUR_JOB_ID/code-signoff
+Content-Type: application/json
+
+{
+  "reviewer_name": "Adoma",
+  "reviewer_role": "Senior Data Engineer",
+  "decision": "APPROVED",
+  "notes": "Code reviewed — all field mappings correct, DW audit fields present."
+}
+
+###
+
+### Regenerate — soft reject, re-run conversion from Step 6
+POST {{base}}/api/jobs/YOUR_JOB_ID/code-signoff
+Content-Type: application/json
+
+{
+  "reviewer_name": "Adoma",
+  "reviewer_role": "Senior Data Engineer",
+  "decision": "REGENERATE",
+  "notes": "Join condition is wrong — regenerate with corrected logic."
+}
+
+###
+
+### Reject — hard stop, job is permanently blocked
+POST {{base}}/api/jobs/YOUR_JOB_ID/code-signoff
+Content-Type: application/json
+
+{
+  "reviewer_name": "Adoma",
+  "reviewer_role": "Senior Data Engineer",
+  "decision": "REJECTED",
+  "notes": "Fundamental design issue — this mapping should not be converted as-is. Upload a corrected mapping to start fresh."
+}
+
+
+### ─────────────────────────────────────────────────────────────
+### DOWNLOADS
+### ─────────────────────────────────────────────────────────────
+
+### Download Source-to-Target mapping Excel workbook
+GET {{base}}/api/jobs/YOUR_JOB_ID/s2t/download
+
+### Download a converted code file (replace FILENAME with e.g. "main.py" or "models/orders.sql")
+GET {{base}}/api/jobs/YOUR_JOB_ID/download/FILENAME
+
+### Download a generated test file
+GET {{base}}/api/jobs/YOUR_JOB_ID/tests/download/tests/test_conversion.py
+
+
+### ─────────────────────────────────────────────────────────────
+### CLEANUP
+### ─────────────────────────────────────────────────────────────
+
+### Delete a job (removes DB record, log file, and S2T Excel)
+DELETE {{base}}/api/jobs/YOUR_JOB_ID

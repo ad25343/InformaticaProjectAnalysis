@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git merge 2d9f03f --ff-only)"
+    ]
+  }
+}

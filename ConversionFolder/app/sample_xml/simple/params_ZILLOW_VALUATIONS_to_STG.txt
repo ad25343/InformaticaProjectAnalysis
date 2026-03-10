@@ -1,0 +1,11 @@
+# params_ZILLOW_VALUATIONS_to_STG.txt
+# Paired parameter file for m_ZILLOW_VALUATIONS_to_STG
+# Use together with wf_ZILLOW_VALUATIONS_to_STG.xml
+#
+[PROPERTY_ETL.WF_ZILLOW_VALUATIONS_to_STG]
+$$SRC_CONNECTION=FlatFile_Zillow_DEV
+$$TGT_CONNECTION=Oracle_PROPERTY_DWH_DEV
+$$SOURCE_FILE_DIR=/data/inbound/zillow
+$$LOAD_DATE=2024-01-15
+$$REJECT_FILE_DIR=/data/etl/reject/property
+$$ENV=DEV

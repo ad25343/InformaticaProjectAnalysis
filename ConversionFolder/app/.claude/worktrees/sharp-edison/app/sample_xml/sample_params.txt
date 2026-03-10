@@ -1,0 +1,16 @@
+# sample_params.txt — Informatica parameter file
+# Paired with sample_workflow.xml and sample_mapping.xml
+#
+# Scope header format: [FolderName.WorkflowName]
+#   or               : [FolderName.WorkflowName.SessionName]
+# Variable names must start with $$
+
+[SALES_ETL.WF_STG_ORDERS_to_FACT_ORDERS]
+$$LOAD_DATE=2024-01-15
+$$SRC_CONNECTION=Oracle_SALES_DB_DEV
+$$TGT_CONNECTION=Oracle_DWH_DEV
+$$REJECT_FILE_DIR=/data/etl/reject/sales
+
+[SALES_ETL.WF_STG_ORDERS_to_FACT_ORDERS.s_STG_ORDERS_to_FACT_ORDERS]
+$$BATCH_ID=20240115_001
+$$ENV=DEV
