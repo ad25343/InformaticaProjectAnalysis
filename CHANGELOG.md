@@ -18,6 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - USER_GUIDE.md — complete user guide covering setup, project config reference,
   analysis phases, UI views, operating modes, API reference, troubleshooting, glossary
 - Sample project config (`firstbank_migration.project.yaml`) for the 50-mapping
-  FirstBank test estate
+  FirstBank test project
 - UI wireframes: dashboard (01), pattern groups (02), dependency graph (03)
 - Project baseline: LICENSE (CC BY-NC 4.0), .gitignore, CHANGELOG.md, .env.example

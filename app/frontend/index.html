@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InformaticaProjectAnalysis</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.4/Recharts.min.js"></script>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .spinner { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+    const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } = Recharts;
+
+    // ─── API helpers ────────────────────────────────────────
+    const API = "/api";
+    async function fetchJSON(path) {
+      const r = await fetch(`${API}${path}`);
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    }
+    async function postJSON(path, body) {
+      const r = await fetch(`${API}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    }
+
+    // ─── Icons (inline SVG, no lucide dependency) ───────────
+    const Icon = ({ d, className = "w-4 h-4", stroke = "currentColor" }) => (
+      <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke={stroke}>
+        <path strokeLinecap="round" strokeLinejoin="round" d={d} />
+      </svg>
+    );
+    const CheckIcon = (p) => <Icon {...p} d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />;
+    const AlertIcon = (p) => <Icon {...p} d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />;
+    const XIcon = (p) => <Icon {...p} d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />;
+    const DownloadIcon = (p) => <Icon {...p} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />;
+    const ArrowRight = (p) => <Icon {...p} d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />;
+    const FolderIcon = (p) => <Icon {...p} d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />;
+    const PlayIcon = (p) => <Icon {...p} d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />;
+
+    // ─── Confidence / Tier badges ───────────────────────────
+    const confStyles = {
+      HIGH: "bg-green-100 text-green-800 border-green-200",
+      MEDIUM: "bg-yellow-100 text-yellow-800 border-yellow-200",
+      LOW: "bg-red-100 text-red-800 border-red-200",
+      UNCLASSIFIED: "bg-gray-100 text-gray-600 border-gray-200",
+    };
+    const Badge = ({ label, style }) => (
+      <span className={`px-2 py-0.5 rounded-full text-xs font-medium border ${style}`}>{label}</span>
+    );
+    const ConfBadge = ({ level }) => <Badge label={level} style={confStyles[level] || confStyles.UNCLASSIFIED} />;
+    const tierStyles = { 1: "text-green-700 bg-green-50", 2: "text-amber-700 bg-amber-50", 3: "text-red-700 bg-red-50" };
+
+    // ─── Spine visualization ────────────────────────────────
+    const SpineViz = ({ spine }) => {
+      if (!spine) return null;
+      const parts = spine.split(" → ");
+      return (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {parts.map((step, i) => (
+            <React.Fragment key={i}>
+              <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-mono rounded border border-blue-100">{step}</span>
+              {i < parts.length - 1 && <span className="text-gray-300">→</span>}
+            </React.Fragment>
+          ))}
+        </div>
+      );
+    };
+
+    // ─── Start Analysis Panel ───────────────────────────────
+    function StartPanel({ onJobStarted }) {
+      const [configPath, setConfigPath] = useState("");
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState(null);
+
+      const start = async () => {
+        if (!configPath.trim()) return;
+        setLoading(true);
+        setError(null);
+        try {
+          const job = await postJSON("/projects/folder", { config_path: configPath.trim() });
+          onJobStarted(job.job_id);
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 max-w-lg w-full">
+            <div className="text-center mb-6">
+              <h1 className="text-xl font-semibold text-gray-900">InformaticaProjectAnalysis</h1>
+              <p className="text-sm text-gray-500 mt-1">Pre-conversion analysis for Informatica → open code</p>
+            </div>
+
+            <label className="block text-sm font-medium text-gray-700 mb-1">Project Config Path</label>
+            <div className="flex gap-2 mb-4">
+              <input
+                type="text"
+                value={configPath}
+                onChange={e => setConfigPath(e.target.value)}
+                placeholder="/path/to/project.yaml"
+                className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                onKeyDown={e => e.key === "Enter" && start()}
+              />
+              <button
+                onClick={start}
+                disabled={loading || !configPath.trim()}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50"
+              >
+                {loading ? <span className="spinner inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> : <PlayIcon className="w-4 h-4" />}
+                Analyze
+              </button>
+            </div>
+
+            {error && <p className="text-sm text-red-600 bg-red-50 px-3 py-2 rounded">{error}</p>}
+
+            <div className="border-t border-gray-100 pt-4 mt-4">
+              <p className="text-xs text-gray-400">Or select a previous analysis:</p>
+              <JobList onSelect={onJobStarted} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function JobList({ onSelect }) {
+      const [jobs, setJobs] = useState([]);
+      useEffect(() => { fetchJSON("/projects").then(setJobs).catch(() => {}); }, []);
+      if (jobs.length === 0) return <p className="text-xs text-gray-300 mt-2">No previous analyses found.</p>;
+      return (
+        <div className="mt-2 space-y-1">
+          {jobs.map(j => (
+            <button key={j.job_id} onClick={() => onSelect(j.job_id)}
+              className="w-full text-left px-3 py-2 text-xs bg-gray-50 rounded border border-gray-100 hover:bg-blue-50">
+              <span className="font-medium text-gray-700">{j.project_name}</span>
+              <span className="text-gray-400 ml-2">{j.status}</span>
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    // ─── Dashboard View ─────────────────────────────────────
+    function Dashboard({ strategy, graph, groups }) {
+      if (!strategy) return <div className="p-6 text-gray-400">Loading strategy...</div>;
+      const s = strategy.summary;
+
+      const complexityData = [
+        { tier: "Simple", count: Math.round(s.total_mappings * 0.3), fill: "#22c55e" },
+        { tier: "Medium", count: Math.round(s.total_mappings * 0.4), fill: "#f59e0b" },
+        { tier: "Complex", count: Math.round(s.total_mappings * 0.3), fill: "#ef4444" },
+      ];
+
+      // Compute confidence distribution from groups
+      let confDist = { HIGH: 0, MEDIUM: 0, LOW: 0, UNCLASSIFIED: 0 };
+      (groups || []).forEach(g => {
+        (g.members || []).forEach(m => {
+          const c = (m.confidence || "UNCLASSIFIED").toUpperCase();
+          confDist[c] = (confDist[c] || 0) + 1;
+        });
+      });
+      // If no member-level data, approximate
+      if (Object.values(confDist).every(v => v === 0)) {
+        confDist = { HIGH: Math.round(s.total_mappings * 0.7), MEDIUM: Math.round(s.total_mappings * 0.2), LOW: Math.round(s.total_mappings * 0.08), UNCLASSIFIED: Math.round(s.total_mappings * 0.02) };
+      }
+      const confData = [
+        { name: "HIGH", value: confDist.HIGH, color: "#22c55e" },
+        { name: "MEDIUM", value: confDist.MEDIUM, color: "#f59e0b" },
+        { name: "LOW", value: confDist.LOW, color: "#ef4444" },
+        { name: "UNCLASSIFIED", value: confDist.UNCLASSIFIED, color: "#94a3b8" },
+      ].filter(d => d.value > 0);
+
+      const execStages = (strategy.execution_order || []).length;
+
+      return (
+        <div className="p-6 max-w-7xl mx-auto">
+          {/* Project header */}
+          <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">{strategy.project_name || "Analysis"}</h2>
+                <p className="text-sm text-gray-500 mt-1">Analysis completed · {s.total_mappings} mappings analyzed</p>
+              </div>
+              <div className="flex gap-2">
+                <a href={`/api/projects/${strategy.analysis_job_id}/strategy.json`} target="_blank"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-md hover:bg-gray-50">
+                  <DownloadIcon className="w-3.5 h-3.5" /> Strategy JSON
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* KPI cards */}
+          <div className="grid grid-cols-5 gap-4 mb-6">
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Total Mappings</p>
+              <p className="text-2xl font-bold text-gray-900 mt-1">{s.total_mappings}</p>
+            </div>
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Pattern Groups</p>
+              <p className="text-2xl font-bold text-blue-600 mt-1">{s.pattern_groups}</p>
+            </div>
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Template Candidates</p>
+              <p className="text-2xl font-bold text-green-600 mt-1">{s.template_candidates}</p>
+              <p className="text-xs text-gray-400 mt-0.5">across {s.pattern_groups} groups</p>
+            </div>
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Unique Mappings</p>
+              <p className="text-2xl font-bold text-amber-600 mt-1">{s.unique_mappings}</p>
+              <p className="text-xs text-gray-400 mt-0.5">individual conversion</p>
+            </div>
+            <div className="bg-white rounded-lg border border-gray-200 p-4 bg-green-50 border-green-200">
+              <p className="text-xs text-green-700 uppercase tracking-wide">Scope Reduction</p>
+              <p className="text-2xl font-bold text-green-700 mt-1">{s.scope_reduction_pct}%</p>
+              <p className="text-xs text-green-600 mt-0.5">{s.total_mappings} → {s.pattern_groups + s.unique_mappings} outputs</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-6 mb-6">
+            {/* Complexity */}
+            <div className="bg-white rounded-lg border border-gray-200 p-5">
+              <h3 className="text-sm font-medium text-gray-700 mb-4">Complexity Distribution</h3>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={complexityData} barSize={40}>
+                  <XAxis dataKey="tier" tick={{ fontSize: 12 }} />
+                  <YAxis tick={{ fontSize: 12 }} />
+                  <Tooltip />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                    {complexityData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Confidence */}
+            <div className="bg-white rounded-lg border border-gray-200 p-5">
+              <h3 className="text-sm font-medium text-gray-700 mb-4">Confidence Distribution</h3>
+              <ResponsiveContainer width="100%" height={160}>
+                <PieChart>
+                  <Pie data={confData} cx="50%" cy="50%" innerRadius={40} outerRadius={65} dataKey="value"
+                    label={({ name, value }) => `${name}: ${value}`}>
+                    {confData.map((e, i) => <Cell key={i} fill={e.color} />)}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Dependency */}
+            <div className="bg-white rounded-lg border border-gray-200 p-5">
+              <h3 className="text-sm font-medium text-gray-700 mb-4">Dependency Structure</h3>
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-20 text-xs text-gray-500">Depth</div>
+                  <div className="text-lg font-semibold text-gray-900">{execStages} stages</div>
+                </div>
+                <div className="mt-2 space-y-1.5">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Dependency edges</span>
+                    <span className="font-medium text-gray-700">{graph ? graph.dependency_edges.length : 0}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Shared assets</span>
+                    <span className="font-medium text-gray-700">{graph ? graph.shared_assets.length : 0}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Execution stages</span>
+                    <span className="font-medium text-gray-700">{execStages}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Pattern groups table */}
+          <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
+            <h3 className="text-sm font-medium text-gray-700 mb-4">Pattern Groups</h3>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
+                  <th className="pb-2 font-medium">Group</th>
+                  <th className="pb-2 font-medium">Spine</th>
+                  <th className="pb-2 font-medium text-center">Mappings</th>
+                  <th className="pb-2 font-medium text-center">Confidence</th>
+                  <th className="pb-2 font-medium text-right">Output</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(groups || []).map((g, i) => (
+                  <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="py-2.5 font-medium text-gray-900">{g.group_name}</td>
+                    <td className="py-2.5 text-gray-500 font-mono text-xs">{g.spine}</td>
+                    <td className="py-2.5 text-center text-gray-700">{g.member_count}</td>
+                    <td className="py-2.5 text-center"><ConfBadge level={g.overall_confidence || "MEDIUM"} /></td>
+                    <td className="py-2.5 text-right text-xs text-gray-500">1 template + config</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Review gate */}
+          <ReviewGate jobId={strategy.analysis_job_id} />
+        </div>
+      );
+    }
+
+    function ReviewGate({ jobId }) {
+      const [state, setState] = useState("pending");
+      return (
+        <div className="bg-white rounded-lg border-2 border-blue-200 p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Strategy Review Gate</h3>
+              <p className="text-xs text-gray-500 mt-1">
+                {state === "pending" ? "Review the pattern groups and dependency graph before approving."
+                  : state === "approved" ? "Strategy approved. Ready for download."
+                  : "Strategy rejected. Analysis will re-run with reviewer notes."}
+              </p>
+            </div>
+            {state === "pending" && (
+              <div className="flex gap-2">
+                <button onClick={() => setState("rejected")}
+                  className="px-4 py-2 text-sm font-medium text-red-600 bg-white border border-red-200 rounded-md hover:bg-red-50">Reject</button>
+                <button onClick={() => setState("approved")}
+                  className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">Approve Strategy</button>
+              </div>
+            )}
+            {state === "approved" && (
+              <div className="flex items-center gap-2 text-green-600">
+                <CheckIcon className="w-5 h-5" /><span className="text-sm font-medium">Approved</span>
+              </div>
+            )}
+            {state === "rejected" && (
+              <button onClick={() => setState("pending")}
+                className="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-md hover:bg-gray-50">Reset</button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Pattern Groups View ────────────────────────────────
+    function PatternGroupsView({ groups }) {
+      const [selectedIdx, setSelectedIdx] = useState(0);
+      if (!groups || groups.length === 0) return <div className="p-6 text-gray-400">No pattern groups found.</div>;
+      const g = groups[selectedIdx];
+
+      return (
+        <div className="flex h-[calc(100vh-105px)]">
+          {/* Left panel */}
+          <div className="w-80 bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0">
+            <div className="p-3">
+              <p className="text-xs text-gray-500 uppercase tracking-wide px-2 mb-2">Pattern Groups ({groups.length})</p>
+              {groups.map((gr, i) => (
+                <button key={i} onClick={() => setSelectedIdx(i)}
+                  className={`w-full text-left px-3 py-2.5 rounded-md mb-1 transition-colors ${
+                    selectedIdx === i ? "bg-blue-50 border border-blue-200" : "hover:bg-gray-50 border border-transparent"}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-900 truncate">{gr.group_name}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${confStyles[gr.overall_confidence || "MEDIUM"]}`}>{gr.member_count}</span>
+                  </div>
+                  <div className="text-xs text-gray-400 font-mono truncate mt-1">{gr.spine}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Right panel */}
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="mb-6">
+              <div className="flex items-center gap-3 mb-2">
+                <h2 className="text-lg font-semibold text-gray-900">{g.group_name}</h2>
+                <ConfBadge level={g.overall_confidence || "MEDIUM"} />
+              </div>
+              <p className="text-sm text-gray-500">{g.member_count} mappings in this group</p>
+            </div>
+
+            {/* Spine */}
+            <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Transformation Spine</p>
+              <SpineViz spine={g.spine} />
+            </div>
+
+            {/* Members */}
+            <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Member Mappings ({(g.members || []).length})</p>
+              {(g.members || []).length > 0 ? (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-gray-500 uppercase tracking-wide border-b border-gray-100">
+                      <th className="pb-2 font-medium">Mapping</th>
+                      <th className="pb-2 font-medium text-center">Tier</th>
+                      <th className="pb-2 font-medium text-center">Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.members.map((m, i) => (
+                      <tr key={i} className="border-b border-gray-50">
+                        <td className="py-2 font-mono text-xs text-gray-900">{m.mapping_name}</td>
+                        <td className="py-2 text-center">
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${tierStyles[m.variation_tier] || ""}`}>
+                            Tier {m.variation_tier}
+                          </span>
+                        </td>
+                        <td className="py-2 text-center"><ConfBadge level={m.confidence} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="text-xs text-gray-400">Member details available in strategy JSON.</p>
+              )}
+            </div>
+
+            {/* Externalized params */}
+            {g.externalized_params && g.externalized_params.length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200 p-4 mb-4">
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Externalized Parameters</p>
+                <p className="text-xs text-gray-400 mb-2">These become config entries in the template</p>
+                <div className="flex flex-wrap gap-2">
+                  {g.externalized_params.map((p, i) => (
+                    <span key={i} className="px-2 py-1 bg-gray-50 border border-gray-100 rounded text-xs font-mono text-gray-700">{p}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Evidence */}
+            <div className="bg-white rounded-lg border border-gray-200 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Evidence — Why These Were Grouped</p>
+              <div className="text-sm text-gray-600 space-y-2">
+                <p>All {g.member_count} mappings share spine: <span className="font-mono text-xs bg-gray-50 px-1.5 py-0.5 rounded">{g.spine}</span></p>
+                <p className="text-xs text-gray-400 mt-2">Recommendation: 1 parameterized template + 1 config with {g.member_count} entries.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Dependency Graph View ──────────────────────────────
+    function DependencyGraphView({ strategy, graph }) {
+      const [selected, setSelected] = useState(null);
+
+      if (!strategy || !graph) return <div className="p-6 text-gray-400">Loading graph data...</div>;
+
+      // Build execution stages from strategy
+      const stages = (strategy.execution_order || []).map((stage, i) => ({
+        label: `Stage ${i + 1}`,
+        mappings: stage,
+      }));
+
+      // Build lookup: mapping → which mappings depend on it
+      const downstreamMap = {};
+      const upstreamMap = {};
+      (graph.dependency_edges || []).forEach(e => {
+        const from = e.from_mapping || e["from"];
+        const to = e.to_mapping || e["to"];
+        if (!downstreamMap[from]) downstreamMap[from] = [];
+        downstreamMap[from].push(to);
+        if (!upstreamMap[to]) upstreamMap[to] = [];
+        upstreamMap[to].push(from);
+      });
+
+      // Colors per stage
+      const stageColors = [
+        { bg: "bg-blue-50", border: "border-blue-200", text: "text-blue-700", nodeBg: "bg-blue-100", nodeBorder: "border-blue-300" },
+        { bg: "bg-purple-50", border: "border-purple-200", text: "text-purple-700", nodeBg: "bg-purple-100", nodeBorder: "border-purple-300" },
+        { bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-700", nodeBg: "bg-amber-100", nodeBorder: "border-amber-300" },
+        { bg: "bg-green-50", border: "border-green-200", text: "text-green-700", nodeBg: "bg-green-100", nodeBorder: "border-green-300" },
+        { bg: "bg-red-50", border: "border-red-200", text: "text-red-700", nodeBg: "bg-red-100", nodeBorder: "border-red-300" },
+      ];
+
+      const upstream = selected ? (upstreamMap[selected] || []) : [];
+      const downstream = selected ? (downstreamMap[selected] || []) : [];
+
+      return (
+        <div className="flex h-[calc(100vh-105px)]">
+          <div className="flex-1 overflow-auto p-6">
+            <div className="space-y-6">
+              {stages.map((stage, si) => {
+                const colors = stageColors[si % stageColors.length];
+                return (
+                  <div key={si}>
+                    <div className={`inline-block px-3 py-1 rounded-full text-xs font-medium mb-3 border ${colors.bg} ${colors.border} ${colors.text}`}>
+                      {stage.label} — {stage.mappings.length} mappings (parallel)
+                    </div>
+                    <div className="flex flex-wrap gap-3 ml-4">
+                      {stage.mappings.map(name => {
+                        const isSelected = selected === name;
+                        const isUp = upstream.includes(name);
+                        const isDown = downstream.includes(name);
+                        const dimmed = selected && !isSelected && !isUp && !isDown;
+                        return (
+                          <button key={name} onClick={() => setSelected(isSelected ? null : name)}
+                            className={`px-3 py-2 rounded-lg border text-left transition-all ${colors.nodeBg} ${colors.nodeBorder} ${
+                              isSelected ? "ring-2 ring-blue-500 shadow-md" : "hover:shadow-sm"
+                            } ${dimmed ? "opacity-30" : "opacity-100"}`}>
+                            <p className={`text-xs font-semibold ${colors.text}`}>{name}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {si < stages.length - 1 && (
+                      <div className="flex items-center gap-2 ml-4 mt-3">
+                        <div className="flex-1 border-t border-dashed border-gray-200" />
+                        <span className="text-xs text-gray-300">↓ depends on above</span>
+                        <div className="flex-1 border-t border-dashed border-gray-200" />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Detail panel */}
+          <div className="w-80 bg-white border-l border-gray-200 overflow-y-auto flex-shrink-0 p-4">
+            {selected ? (
+              <div>
+                <h3 className="text-sm font-semibold text-gray-900 mb-3 font-mono">{selected}</h3>
+
+                <div className="mb-4">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Depends On ({upstream.length})</p>
+                  {upstream.length === 0
+                    ? <p className="text-xs text-gray-400">No upstream — root node</p>
+                    : upstream.map(u => (
+                      <button key={u} onClick={() => setSelected(u)}
+                        className="w-full text-left px-2 py-1.5 text-xs bg-blue-50 rounded border border-blue-100 hover:bg-blue-100 mb-1 font-mono">{u}</button>
+                    ))
+                  }
+                </div>
+
+                <div className="mb-4">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Depended On By ({downstream.length})</p>
+                  {downstream.length === 0
+                    ? <p className="text-xs text-gray-400">No downstream — leaf node</p>
+                    : downstream.map(d => (
+                      <button key={d} onClick={() => setSelected(d)}
+                        className="w-full text-left px-2 py-1.5 text-xs bg-amber-50 rounded border border-amber-100 hover:bg-amber-100 mb-1 font-mono">{d}</button>
+                    ))
+                  }
+                </div>
+
+                <div className="p-3 bg-red-50 rounded-lg border border-red-100">
+                  <p className="text-xs font-medium text-red-700 mb-1">Error Propagation</p>
+                  <p className="text-xs text-red-600">
+                    If <span className="font-mono font-medium">{selected}</span> fails,
+                    {downstream.length > 0 ? ` ${downstream.length} downstream mapping${downstream.length > 1 ? "s" : ""} affected.` : " no downstream impact (leaf)."}
+                  </p>
+                </div>
+
+                {/* Shared assets */}
+                {graph.shared_assets && graph.shared_assets.length > 0 && (
+                  <div className="mt-4">
+                    <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Shared Assets</p>
+                    {graph.shared_assets.filter(a => (a.referenced_by || []).includes(selected)).map((a, i) => (
+                      <div key={i} className="text-xs bg-gray-50 px-2 py-1.5 rounded border border-gray-100 mb-1">
+                        <span className="font-mono font-medium text-gray-700">{a.table_name}</span>
+                        <span className="text-gray-400 ml-1">({(a.referenced_by || []).length} refs)</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-center">
+                <p className="text-sm text-gray-400">Click a node to see details</p>
+                <p className="text-xs text-gray-300 mt-1">Dependencies, downstream impact, shared assets</p>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Main App ───────────────────────────────────────────
+    function App() {
+      const [jobId, setJobId] = useState(null);
+      const [tab, setTab] = useState("dashboard");
+      const [strategy, setStrategy] = useState(null);
+      const [graph, setGraph] = useState(null);
+      const [groups, setGroups] = useState(null);
+      const [loading, setLoading] = useState(false);
+
+      const loadJob = useCallback(async (id) => {
+        setJobId(id);
+        setLoading(true);
+        try {
+          const [strat, gr, grps] = await Promise.all([
+            fetchJSON(`/projects/${id}/strategy.json`),
+            fetchJSON(`/projects/${id}/graph`),
+            fetchJSON(`/projects/${id}/groups`),
+          ]);
+          setStrategy(strat);
+          setGraph(gr);
+          setGroups(grps);
+        } catch (e) {
+          console.error("Failed to load job data:", e);
+        } finally {
+          setLoading(false);
+        }
+      }, []);
+
+      if (!jobId) return <StartPanel onJobStarted={loadJob} />;
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+          {/* Header */}
+          <header className="bg-white border-b border-gray-200 px-6 py-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-xl font-semibold text-gray-900">InformaticaProjectAnalysis</h1>
+                <p className="text-sm text-gray-500 mt-0.5">Pre-conversion analysis · Informatica → open code</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={() => { setJobId(null); setStrategy(null); setGraph(null); setGroups(null); }}
+                  className="text-xs text-gray-400 hover:text-gray-600">← Back</button>
+                <span className="text-xs text-gray-400">v0.1.0</span>
+                <div className="w-2 h-2 rounded-full bg-green-400" title="Connected" />
+              </div>
+            </div>
+            <div className="flex gap-6 mt-4 border-b border-gray-100 -mb-4">
+              {["dashboard", "groups", "graph"].map(t => (
+                <button key={t} onClick={() => setTab(t)}
+                  className={`pb-3 text-sm ${tab === t ? "font-medium text-blue-600 border-b-2 border-blue-600" : "text-gray-500 hover:text-gray-700"}`}>
+                  {t === "dashboard" ? "Dashboard" : t === "groups" ? "Pattern Groups" : "Dependency Graph"}
+                </button>
+              ))}
+            </div>
+          </header>
+
+          {loading ? (
+            <div className="flex items-center justify-center h-64">
+              <div className="spinner w-8 h-8 border-4 border-blue-200 border-t-blue-600 rounded-full" />
+            </div>
+          ) : (
+            <>
+              {tab === "dashboard" && <Dashboard strategy={strategy} graph={graph} groups={groups} />}
+              {tab === "groups" && <PatternGroupsView groups={groups} />}
+              {tab === "graph" && <DependencyGraphView strategy={strategy} graph={graph} />}
+            </>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

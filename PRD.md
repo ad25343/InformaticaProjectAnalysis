@@ -7,29 +7,124 @@
 **License:** CC BY-NC 4.0 — [github.com/ad25343/InformaticaProjectAnalysis](https://github.com/ad25343/InformaticaProjectAnalysis)
 **Contact:** [github.com/ad25343/InformaticaProjectAnalysis/issues](https://github.com/ad25343/InformaticaProjectAnalysis/issues)
 
+> **Bottom line:** Pre-conversion analysis for teams migrating from Informatica
+> PowerCenter to open code (Python, dbt, PySpark). Reads all mapping XMLs from a
+> PowerCenter project, identifies cross-mapping patterns, builds a dependency graph,
+> and produces a conversion strategy that humans review before any conversion begins.
+
 ---
 
-## 1. Problem Statement
+## 1. Background — What Is Informatica PowerCenter?
 
-Informatica PowerCenter estates are converted mapping by mapping, in complete
-isolation. Each mapping produces a fully self-contained output with no awareness
-of other mappings in the estate. This leads to duplicated source definitions,
-repeated transformation logic, no shared macros, no dependency awareness, and no
-project-level structure in the converted output.
+Informatica PowerCenter is an enterprise ETL (Extract, Transform, Load) platform
+that has been used by large organizations — banks, insurers, telecoms, government
+agencies — for over two decades to move and transform data between systems. It is
+one of the most widely deployed data integration tools in the world.
 
-InformaticaProjectAnalysis solves this by reading an entire Informatica estate
-before any conversion runs, identifying cross-mapping patterns, grouping
-structurally similar mappings into template candidates, building a dependency
-graph, and producing a conversion strategy document that tech leads and leadership
-review and approve before conversion starts.
+In PowerCenter, each unit of data transformation logic is called a **mapping**. A
+mapping defines how data flows from a source (e.g., a database table, flat file,
+or API) through a series of transformations (lookups, expressions, filters,
+aggregations, routers) and into a target table. A single mapping might load a
+customer dimension table; another might aggregate daily transactions into a monthly
+summary.
 
-The tool observes and surfaces characteristics of the estate. It does not prescribe
-target stacks, warehouses, or orchestration platforms — those decisions belong to
+A typical enterprise PowerCenter environment contains dozens to hundreds of these
+mappings, organized into folders and grouped by workflows that define when and in
+what order they run. All of this configuration is stored internally by PowerCenter,
+but it can be **exported as XML files** — one XML per mapping, per workflow, per
+parameter file.
+
+These XML exports are the raw material that this tool works with.
+
+---
+
+## 2. The Problem — From SaaS Tools to Open Code
+
+Organizations are moving off Informatica PowerCenter. The reasons vary — licensing
+cost, vendor lock-in, the shift toward modern data stacks, or simply that the
+platform is end-of-life for their needs.
+
+Until recently, the migration path led to another SaaS platform: Informatica's own
+Cloud Data Integration, Talend, Matillion, or one of the managed migration services
+that charge per-mapping conversion fees. The destination changed, but the model
+stayed the same — proprietary tools, recurring licenses, platform dependency.
+
+That model is shifting. Engineering teams increasingly want to land in **open code**:
+Python scripts, dbt models, PySpark jobs, Airflow DAGs (Directed Acyclic Graphs —
+workflow dependency chains) — code they own, version-control, test, and deploy
+without platform lock-in. The target is not another tool. The target is a codebase.
+
+This changes the conversion problem fundamentally. A SaaS-to-SaaS migration can
+lean on the destination platform's import wizards. But a SaaS-to-code migration
+needs to produce **well-structured, maintainable source code** — not just
+functionally equivalent scripts.
+
+This is a **conversion** problem, not a rewrite. The business logic encoded in
+those mappings is tested, production-proven, and (often) poorly documented. The
+goal is to faithfully reproduce that logic in open code, not to redesign the data
+architecture from scratch.
+
+### Why One-at-a-Time Conversion Fails
+
+The naive approach is to convert each mapping in isolation. Take mapping XML #1,
+parse it, produce the equivalent Python script, move on to mapping #2. This works
+— but it produces exactly the kind of unmaintainable codebase that teams are
+trying to escape:
+
+- If 14 mappings all follow the same truncate-and-load pattern differing only by
+  table name, you get 14 separate scripts instead of one parameterized template
+  plus a config file.
+- If 8 mappings share the same SCD2 (slowly changing dimension) pattern, each
+  gets its own copy of the SCD2 logic instead of sharing a common implementation.
+- Shared lookup tables are redefined independently in every script.
+- There is no dependency graph — no way to know which scripts must run before
+  others.
+- There is no project-level structure — no unified sources, no shared utilities,
+  no layered organization.
+
+The result is a converted codebase that works but is unmaintainable — hundreds of
+files with massive duplication, no structure, and no awareness of how the pieces
+fit together. You left a proprietary tool and landed in a code mess.
+
+**The fix is to analyze the full project before converting any individual mapping.**
+
+---
+
+## 3. What This Tool Does
+
+InformaticaProjectAnalysis is the pre-conversion analysis step for teams migrating
+from Informatica PowerCenter to open code. It reads all the mapping XMLs from a
+PowerCenter project (the complete collection of exported mappings, workflows, and
+parameter files) and produces a **conversion strategy** that answers three
+questions:
+
+1. **Which mappings share the same structural pattern?** Mappings that follow the
+   same transformation flow (e.g., source → lookup → expression → target) with only
+   table names and column names differing are candidates for a single parameterized
+   template. The tool groups them together, shows the evidence, and assigns a
+   confidence level.
+
+2. **What depends on what?** If mapping A loads `DIM_CUSTOMER` and mapping B does a
+   lookup against `DIM_CUSTOMER`, then B depends on A — it must run after A
+   completes. The tool builds a dependency graph across all mappings and computes
+   a safe execution order.
+
+3. **What needs human attention?** Not every mapping can be automatically classified
+   with high confidence. Custom SQL overrides, missing definitions, and unusual
+   transformation patterns reduce certainty. The tool flags these for tech lead
+   review.
+
+The output is a strategy document (PDF + Excel + JSON) that tech leads and
+leadership review and approve before any conversion begins.
+
+The tool observes and surfaces structural characteristics. It does not prescribe
+which target language to use (Python, dbt, PySpark, etc.), which warehouse to
+target, or how to orchestrate the converted pipelines. Those decisions belong to
 the humans reviewing the strategy and the conversion tools they choose.
 
 ---
 
-## 2. Target Personas
+## 4. Target Personas
 
 **Primary: Data Engineering Tech Lead**
 Reviews the strategy document in detail. Validates pattern groupings, confirms or
@@ -47,36 +142,44 @@ strategy JSON to be correct, complete, and well-structured.
 
 ---
 
-## 3. Core Principles
+## 5. Core Principles
 
-1. **Analyze all N mappings together.** Cross-mapping references (target-to-lookup
-   dependencies, shared sources) can only be detected when the full estate is visible.
+1. **Analyze all N mappings together.** Cross-mapping references (a mapping that
+   looks up a table produced by another mapping) can only be detected when the full
+   project is visible. Analyzing mappings in isolation misses these relationships.
 
 2. **Pattern grouping is the primary goal.** Structurally similar mappings become one
-   template + config instead of N separate files.
+   template + config instead of N separate files. A project of 50 mappings might
+   collapse into 8 templates + 12 unique files.
 
 3. **Strategy is a recommendation with evidence.** Every grouping shows the member
    mappings, structural evidence, parameter differences, and confidence level.
+   Nothing is a black box.
 
 4. **Converting, not rewriting.** The analysis observes what exists and recommends
-   smart conversion. It does not redesign the data architecture.
+   smart conversion. It does not redesign the data architecture or suggest how the
+   project "should have been built."
 
-5. **Variation handling is explicit.** Variation within groups is surfaced
-   transparently so humans can confirm or override.
+5. **Variation handling is explicit.** Mappings within a group are not all identical.
+   The tool classifies how much each member differs from the group's canonical
+   pattern and surfaces this transparently.
 
 6. **Classification by structural behavior, not naming conventions.** Real-world
-   estates do not follow consistent naming. Classification uses transformation
-   topology and graph position.
+   projects do not follow consistent naming. A mapping called `TBL_047_PROC` might
+   be a simple dimension load. Classification uses transformation topology and
+   graph position, not names.
 
 7. **Honest uncertainty.** The strategy distinguishes high-confidence classifications
-   from ambiguous ones that need human confirmation.
+   from ambiguous ones that need human confirmation. The output says "here are 38
+   I'm confident about, 8 that need a human to confirm, and 4 I couldn't classify."
 
-8. **Security is paramount.** All input is validated, all XML parsing is XXE-hardened,
-   no secrets in code or logs, all dependencies audited.
+8. **Security is paramount.** All input is validated, all XML parsing is hardened
+   against XXE (XML External Entity) injection, no secrets in code or logs, all
+   dependencies audited.
 
 ---
 
-## 4. Input — Project Configuration
+## 6. Input — Project Configuration
 
 The primary input is a `*.project.yaml` file that defines the full migration scope.
 This is the single source of truth for the analysis.
@@ -106,7 +209,7 @@ analysis:
   min_group_size: 2
   confidence_threshold: 0.7
   detect_shared_assets: true
-  build_dependency_dag: true
+  build_dependency_dag: true        # DAG = Directed Acyclic Graph
   classify_expressions: true
 
 review:
@@ -134,7 +237,7 @@ s3 (bucket path).
 
 ---
 
-## 5. Pipeline Architecture
+## 7. Pipeline Architecture
 
 ```
 *.project.yaml (uploaded via UI, dropped in watcher dir, or POSTed via API)
@@ -148,9 +251,9 @@ Phase 1   Discovery
           ├── Step 1.2  Parse All Mappings      [deterministic]
           │             Parse each mapping XML → structural components
           │             Cache results by file content hash (SHA-256)
-          │             Aggregate into estate-level graph
+          │             Aggregate into project-level graph
           │
-          ├── Step 1.3  Build Estate Graph      [deterministic + AI-assisted]
+          ├── Step 1.3  Build Project Graph      [deterministic + AI-assisted]
           │             Cross-mapping dependency edges (target → lookup references)
           │             Shared asset detection (tables referenced by 3+ mappings)
           │             Repeated expression detection
@@ -162,7 +265,8 @@ Phase 1   Discovery
     ▼
 Phase 2   Pattern Grouping                      [AI-assisted]
           ├── Step 2.1  Structural Fingerprinting
-          │             Extract spine per mapping (ordered transformation types)
+          │             Extract "spine" per mapping — the ordered sequence of
+          │             transformation types from source to target (see §9.1)
           │             Group by matching spine
           │
           ├── Step 2.2  Variation Classification
@@ -200,9 +304,9 @@ Phase 5   Strategy Delivery
 
 ---
 
-## 6. Phase 1 — Discovery (Detail)
+## 8. Phase 1 — Discovery (Detail)
 
-### 6.1 Source Resolution
+### 8.1 Source Resolution
 
 The `source` section of the project config determines how mappings are located:
 
@@ -217,7 +321,7 @@ All resolved files are auto-detected by content: mapping XML, workflow XML,
 parameter file, or unknown. Files that don't match any known type are logged
 and skipped.
 
-### 6.2 Mapping Parser
+### 8.2 Mapping Parser
 
 Each mapping XML is parsed to extract its structural components:
 
@@ -239,21 +343,21 @@ Per-mapping parse output:
 Results are cached by SHA-256 hash of file content. Unchanged files are not
 re-parsed on incremental runs.
 
-### 6.3 Estate Graph Construction
+### 8.3 Cross-Mapping Graph Construction
 
-From the per-mapping parse results, the tool builds an estate-level graph:
+From the per-mapping parse results, the tool builds a project-level graph:
 
 **Dependency edges** — for each mapping, inspect all Lookup transformations'
 target table names. If that table name matches another mapping's target name,
 create a dependency edge: the lookup mapping depends on the target mapping.
 
 **Shared assets** — tables that appear as Lookup sources in `min_group_size` or
-more mappings across the estate.
+more mappings across the project.
 
 **Repeated expressions** — expression bodies that appear verbatim or structurally
 equivalent in 4+ mappings.
 
-### 6.4 AI-Assisted Interpretation
+### 8.4 AI-Assisted Interpretation
 
 AI is called to interpret elements the parser cannot classify deterministically:
 
@@ -266,9 +370,9 @@ AI is called to interpret elements the parser cannot classify deterministically:
 
 ---
 
-## 7. Phase 2 — Pattern Grouping (Detail)
+## 9. Phase 2 — Pattern Grouping (Detail)
 
-### 7.1 Structural Fingerprinting
+### 9.1 Structural Fingerprinting
 
 Each mapping's transformation topology is reduced to a canonical spine: the ordered
 sequence of transformation types from source to target, derived from the connectors
@@ -281,7 +385,7 @@ Example spines:
 
 Mappings with matching spines are candidates for the same pattern group.
 
-### 7.2 Variation Tiers
+### 9.2 Variation Tiers
 
 Within a spine group, variation is classified:
 
@@ -298,7 +402,7 @@ flow shapes within the same spine match. Does not group. Convert individually.
 Boundary between Tier 2 and Tier 3: **spine + complexity profile**. Two mappings
 match when they share a spine AND their complexity at each step is comparable.
 
-### 7.3 Confidence Levels
+### 9.3 Confidence Levels
 
 Each mapping-to-group assignment carries a confidence level:
 
@@ -314,14 +418,14 @@ below which mappings are flagged for human review (default: 0.7).
 
 ---
 
-## 8. Phase 3 — Strategy Document (Detail)
+## 10. Phase 3 — Strategy Document (Detail)
 
-### 8.1 PDF Report
+### 10.1 PDF Report
 
 Two layers in one document:
 
 **Page 1 — Leadership Summary**
-- Estate name, analysis date, mapping count
+- Project name, analysis date, mapping count
 - Pattern groups found (count + names)
 - Unique mappings (count + names)
 - Scope reduction: "50 mappings → N templates + M unique files"
@@ -338,7 +442,7 @@ Two layers in one document:
 - Risk flags detail (per mapping)
 - Unclassified mappings with reasons
 
-### 8.2 Excel Workbook (5 sheets)
+### 10.2 Excel Workbook (5 sheets)
 
 | Sheet | Contents |
 |---|---|
@@ -348,14 +452,14 @@ Two layers in one document:
 | Per-Mapping Assignments | Mapping name, assigned group (or "unique"), confidence, variation tier, flags, override notes |
 | Risk Flags | Mapping name, flag type, severity, description, recommendation |
 
-### 8.3 Strategy JSON
+### 10.3 Strategy JSON
 
 Machine-readable output describing the full analysis results.
 
 ```json
 {
     "strategy_version": 1,
-    "estate_name": "FirstBank_Q1_Migration",
+    "project_name": "FirstBank_Q1_Migration",
     "analysis_job_id": "uuid",
     "analyzed_at": "ISO datetime",
 
@@ -428,11 +532,11 @@ Schema versioned via `strategy_version` field.
 
 ---
 
-## 9. Phase 4 — Human Gate
+## 11. Phase 4 — Human Gate
 
 The strategy review is a structured decision gate in the UI.
 
-### 9.1 Review Actions
+### 11.1 Review Actions
 
 | Action | Effect |
 |---|---|
@@ -445,14 +549,14 @@ The strategy review is a structured decision gate in the UI.
 | APPROVE | Generates final strategy JSON with review metadata |
 | REJECT | Returns to analysis with reviewer notes as constraints |
 
-### 9.2 Audit Trail
+### 11.2 Audit Trail
 
 Every review action is stamped with reviewer name, role, timestamp, and decision.
 Stored in the `audit_log` table and included in the strategy JSON.
 
 ---
 
-## 10. Phase 5 — Strategy Delivery
+## 12. Phase 5 — Strategy Delivery
 
 The approved strategy is available in three formats:
 
@@ -468,12 +572,12 @@ All three are generated from the same underlying analysis data and are consisten
 
 ---
 
-## 11. UI Architecture
+## 13. UI Architecture
 
-### 11.1 Three Views
+### 13.1 Three Views
 
 **Dashboard (leadership)**
-Estate summary on one screen. Complexity heat map. Scope reduction metric.
+Project summary on one screen. Complexity heat map. Scope reduction metric.
 Dependency depth. Risk flag distribution. Confidence distribution.
 APPROVE / REJECT gate.
 
@@ -487,7 +591,7 @@ Interactive DAG. Nodes = mappings, colored by pattern group. Edges = dependencie
 Click node for details. Execution stages highlighted. Critical path shown.
 Error propagation paths visible.
 
-### 11.2 Technology
+### 13.2 Technology
 
 - React frontend
 - FastAPI backend (port 8090)
@@ -499,7 +603,7 @@ Error propagation paths visible.
 
 ---
 
-## 12. API Surface
+## 14. API Surface
 
 | Method | Path | Description |
 |---|---|---|
@@ -522,7 +626,7 @@ Error propagation paths visible.
 
 ---
 
-## 13. Data Model
+## 15. Data Model
 
 ```
 AnalysisJob
@@ -535,7 +639,7 @@ AnalysisJob
 └── state               JSON blob — per-phase artifacts
     ├── source_resolution       Phase 1.1: files found, types detected
     ├── parse_results           Phase 1.2: per-mapping parse output (cached)
-    ├── estate_graph            Phase 1.3: aggregated graph, dependency edges, shared assets
+    ├── project_graph           Phase 1.3: aggregated graph, dependency edges, shared assets
     ├── pattern_groups          Phase 2: groups with members, spines, confidence
     ├── strategy_pdf_path       Phase 3: path to generated PDF
     ├── strategy_xlsx_path      Phase 3: path to generated Excel
@@ -580,18 +684,18 @@ ParseCache
 
 ---
 
-## 14. Incremental Analysis
+## 16. Incremental Analysis
 
 Phase 1 caches parse results by file content hash. On re-analysis:
 
 - Only new/changed XMLs are re-parsed
-- Phase 2 runs on the full estate (fast — parsing is cached)
+- Phase 2 runs on the full project (fast — parsing is cached)
 - Previous human overrides are preserved unless the underlying XML changed
 - Strategy document includes a diff section showing what changed
 
 ---
 
-## 15. Security Architecture
+## 17. Security Architecture
 
 Security is infrastructure, not a feature layer. See SECURITY.md for full details.
 
@@ -609,25 +713,25 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 
 ---
 
-## 16. Success Metrics
+## 18. Success Metrics
 
 | Metric | Target |
 |---|---|
-| Estate parsing completion rate | > 99% of mappings parsed successfully |
+| Mapping parsing completion rate | > 99% of mappings parsed successfully |
 | Pattern group accuracy (human-confirmed) | > 85% of auto-assigned groupings confirmed without override |
 | Dependency DAG completeness | > 90% of actual dependencies detected |
 | Shared asset detection rate | > 95% of tables referenced by 3+ mappings identified |
 | Strategy generation time (50 mappings) | < 10 minutes |
 | Strategy generation time (500 mappings) | < 60 minutes |
-| Human review time (median) | < 30 minutes for 50-mapping estate |
-| Scope reduction | Typical estate: 40-60% reduction (N mappings → fewer templates + unique files) |
-| Incremental re-analysis time | < 2 minutes for 5 new mappings added to 50-mapping estate |
+| Human review time (median) | < 30 minutes for 50-mapping project |
+| Scope reduction | Typical project: 40-60% reduction (N mappings → fewer templates + unique files) |
+| Incremental re-analysis time | < 2 minutes for 5 new mappings added to 50-mapping project |
 | False positive rate (incorrect groupings) | < 10% |
-| Unclassified mapping rate | < 15% of estate |
+| Unclassified mapping rate | < 15% of project |
 
 ---
 
-## 17. Technical Constraints
+## 19. Technical Constraints
 
 - **Python 3.11+** — asyncio patterns, `X | Y` union syntax
 - **SQLite** — sufficient for single-instance deployment; PostgreSQL migration path via SQLAlchemy
@@ -638,14 +742,14 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 
 ---
 
-## 18. Version Roadmap
+## 20. Version Roadmap
 
 ### v0.1.0 — Foundation (current target)
 
 - Project config parser and validation
 - Source resolution (folder type only)
 - Mapping XML parser (extract transformations, connectors, sources, targets)
-- Estate graph construction (dependency edges, shared assets)
+- Cross-mapping graph construction (dependency edges, shared assets)
 - Basic fingerprinting and pattern grouping
 - Strategy JSON generation
 - FastAPI backend with health endpoint
@@ -688,14 +792,14 @@ Security is infrastructure, not a feature layer. See SECURITY.md for full detail
 - Full test suite (unit + integration + API contract tests)
 - GitHub Actions CI pipeline
 - Security audit and hardening
-- Performance optimization for large estates (500+ mappings)
+- Performance optimization for large projects (500+ mappings)
 - Audit trail and compliance reporting
 
 ---
 
-## 19. Sample Data
+## 21. Sample Data
 
-The repository ships a 50-mapping FirstBank test estate for development and testing:
+The repository ships a 50-mapping FirstBank test project for development and testing:
 
 | Tier | Count | Characteristics |
 |---|---|---|
@@ -706,7 +810,7 @@ The repository ships a 50-mapping FirstBank test estate for development and test
 Located at `sample_data/firstbank/` with a ready-to-use project config at
 `firstbank_migration.project.yaml`.
 
-Expected pattern groups from this estate (validation target):
+Expected pattern groups from this project (validation target):
 - Simple dimension load (7 mappings, spine: SQ → EXP → TARGET)
 - Reference table load (4 mappings, spine: SQ → EXP → TARGET)
 - Staging extract (3 mappings, spine: SQ → FIL → TARGET)

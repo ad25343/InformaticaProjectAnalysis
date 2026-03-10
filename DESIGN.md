@@ -4,25 +4,38 @@
 **Author:** ad25343
 **Created:** 2026-03-09
 
+> **Bottom line:** Pre-conversion analysis for teams migrating from Informatica
+> PowerCenter to open code. Analyzes all mapping XMLs together — not one at a time —
+> to group structurally similar mappings into template candidates, build a dependency
+> graph, and produce a conversion strategy for human review.
+
 ---
 
-## 1. Problem Statement
+## 1. Context — The Informatica Migration Problem
 
-Informatica PowerCenter estates are typically converted mapping by mapping, in
-complete isolation. Each mapping produces a fully self-contained output with no
-awareness of other mappings in the estate.
+Informatica PowerCenter is a legacy enterprise ETL (Extract, Transform, Load) platform
+widely used by banks, insurers, telecoms, and government agencies to move data between
+systems. Each unit of data transformation logic in PowerCenter is called a **mapping** —
+it defines how data flows from a source table, through transformations (lookups,
+expressions, filters, aggregations), and into a target table. A typical enterprise
+PowerCenter environment contains dozens to hundreds of these mappings, all exportable
+as XML files.
 
-This means:
-- If 10 mappings all do truncate-and-load with only the table name differing, they
-  produce 10 separate files instead of one parameterized template + config.
-- If 8 mappings share the same SCD2 pattern, each gets its own copy of the SCD2 logic.
-- Shared source tables are redefined independently in every output.
-- There is no dependency graph — no way to tell which mappings must run before others.
-- There is no project-level structure — no unified sources, no shared macros, no
-  layered model organization.
+Organizations are migrating off PowerCenter. Historically the destination was another
+SaaS platform (Informatica Cloud, Talend, Matillion), but the shift is now toward
+**open code** — Python scripts, dbt models, PySpark jobs — code that teams own,
+version-control, and deploy without platform lock-in. This SaaS-to-code migration
+needs to produce well-structured, maintainable source code, not just functionally
+equivalent scripts. The goal is to **convert** existing logic faithfully, not rewrite
+the data architecture.
 
-InformaticaProjectAnalysis solves this by analyzing an entire Informatica estate
-**before** any conversion runs, identifying cross-mapping patterns, and producing a
+Converting each mapping one at a time, in isolation, produces poor results: 14 mappings
+that follow the same pattern become 14 separate scripts instead of one parameterized
+template. Shared lookup tables are redefined independently. There is no dependency graph,
+no project structure. You left a proprietary tool and landed in a code mess.
+
+InformaticaProjectAnalysis solves this by analyzing the **entire collection of mappings
+before** any conversion runs, identifying cross-mapping patterns, and producing a
 conversion strategy that a human reviews before conversion starts.
 
 ---
@@ -30,12 +43,12 @@ conversion strategy that a human reviews before conversion starts.
 ## 2. Core Principles
 
 1. **Analyze all N mappings together**, not in partitions. Cross-mapping references
-   (target-to-lookup dependencies, shared sources) can only be detected when the full
-   estate is visible.
+   (a mapping that looks up a table produced by another mapping) can only be detected
+   when the full project is visible.
 
 2. **Pattern grouping is the primary goal.** The analysis determines which mappings share
    enough structural similarity that one template + config replaces N separate files.
-   The estate of 50 mappings might collapse into 8 templates + configs and 12 unique files
+   A project of 50 mappings might collapse into 8 templates + configs and 12 unique files
    instead of 50 independent scripts.
 
 3. **The strategy is a recommendation with evidence.** For every pattern group, the
@@ -45,7 +58,7 @@ conversion strategy that a human reviews before conversion starts.
 
 4. **We are converting, not rewriting.** The analysis observes what exists and recommends
    smart conversion — collapsing identical patterns into templates. It does not redesign
-   the data architecture or suggest how the estate "should have been built."
+   the data architecture or suggest how the project "should have been built."
 
 5. **Variation handling is explicit.** Mappings are grouped by structural similarity, and
    variation within groups is surfaced transparently so humans can confirm or override.
@@ -122,7 +135,7 @@ For each of the N mappings, the parser extracts:
 
 ### 5.2 Cross-Mapping Graph (no AI)
 
-From the per-mapping parse results, build the estate-level graph:
+From the per-mapping parse results, build the project-level graph:
 - **Nodes:** every source table, target table, and mapping
 - **Edges:** mapping A writes to TABLE_X, mapping B has a Lookup against TABLE_X → B depends on A
 - **Shared assets:** tables referenced as Lookup sources by 3+ mappings
@@ -196,7 +209,7 @@ Confidence: HIGH (11), MEDIUM (2), LOW (1)
 
 ### 6.4 Classification by Structural Behavior (not naming conventions)
 
-Real-world Informatica estates do not follow consistent naming conventions. Tables may
+Real-world Informatica projects do not follow consistent naming conventions. Tables may
 be called `ACCT_LOAD`, `PROCESS_TRANSACTIONS`, `RPT_SUMMARY`, or `TBL_047_PROC`.
 
 Classification is based on transformation topology and graph position, not names:
@@ -205,12 +218,12 @@ Classification is based on transformation topology and graph position, not names
 |---|---|
 | `DBDNAME` on SOURCE vs TARGET | Which tables are OLTP vs warehouse |
 | Lookup `TABLE` pointing at a table | That table is a shared reference/dimension |
-| Self-lookup (LKP points at own target) | SCD2 dimension — certain |
+| Self-lookup (LKP points at own target) | SCD2 (slowly changing dimension) — certain |
 | Aggregator transformation present | Aggregate/summary table |
 | Number of Lookup transformations | Fan-out of dimension joins → likely fact table |
 | Router + Update Strategy together | SCD2 or conditional load — dimension pattern |
 | Union transformation | Multi-source merge — consolidation table |
-| Lookup in-degree across estate | Shared dimension vs one-off lookup |
+| Lookup in-degree across project | Shared dimension vs one-off lookup |
 | Mapping produces 2+ targets | Router/split output — affects project structure |
 
 Naming conventions are one optional hint that gets folded in if present, not relied upon.
@@ -226,7 +239,7 @@ Three deliverables:
 **PDF** — human-readable strategy document with two layers:
 - Leadership summary (page 1): mapping count, pattern group count, unique mapping count,
   complexity distribution, risk flags, estimated scope reduction
-- Tech lead detail (remaining pages): per-group evidence, dependency DAG visualization,
+- Tech lead detail (remaining pages): per-group evidence, dependency graph (DAG) visualization,
   shared asset catalogue, per-mapping assignments with confidence levels
 
 **Excel workbook** — reviewable tabular data:
@@ -237,8 +250,8 @@ Three deliverables:
 - Sheet 5: Risk Flags (mapping name, flag type, severity, description)
 
 **Strategy JSON** — machine-readable format. Schema versioned. Contains pattern groups
-with members, unique mappings with reasons, shared assets, dependency DAG, and execution
-order (DAG topologically sorted into parallel stages).
+with members, unique mappings with reasons, shared assets, dependency graph (a directed
+acyclic graph / DAG), and execution order (topologically sorted into parallel stages).
 
 ### 7.2 Honest Uncertainty
 
@@ -369,7 +382,7 @@ the PR workflow or the UI.
 A working sample config is provided at:
 `sample_data/firstbank/firstbank_migration.project.yaml`
 
-This config points at the 50-mapping FirstBank test estate and is ready to use
+This config points at the 50-mapping FirstBank test project and is ready to use
 for development and testing of the analysis pipeline.
 
 ---
@@ -381,7 +394,7 @@ The approved strategy is a JSON file — the canonical machine-readable output.
 ```json
 {
     "strategy_version": 1,
-    "estate_name": "FirstBank_Q1_Migration",
+    "project_name": "FirstBank_Q1_Migration",
     "analysis_job_id": "uuid",
     "analyzed_at": "ISO datetime",
 
@@ -524,9 +537,9 @@ Phase 1 caches parse results keyed by file content hash (SHA-256). When new mapp
 are added or existing ones change:
 
 - Only new/changed XMLs are re-parsed (cache hit for unchanged files)
-- Phase 2 (pattern grouping) always runs on the full estate — fast because parsing
+- Phase 2 (pattern grouping) always runs on the full project — fast because parsing
   is cached
-- Phase 3 (strategy generation) runs on the full estate
+- Phase 3 (strategy generation) runs on the full project
 
 The strategy document includes a diff section: "5 new mappings added since last
 analysis — here's what changed in the groupings and dependency graph."
@@ -540,7 +553,7 @@ confirmation is cleared and the mapping is re-evaluated.
 Three views, same underlying data:
 
 **Dashboard view (leadership)**
-Estate summary on one page: total mappings, pattern groups found, unique mappings,
+Project summary on one page: total mappings, pattern groups found, unique mappings,
 complexity distribution (heat map), dependency depth, estimated scope reduction
 ("50 mappings → 8 templates + 12 unique files"). Printable. The approve/reject
 gate lives here — leadership makes the call after tech leads have reviewed the detail.
@@ -556,7 +569,7 @@ Right panel (on group select):
 - Notes field per mapping and per group
 
 **Dependency graph view (both audiences)**
-Interactive DAG visualization. Nodes are mappings, colored by pattern group.
+Interactive dependency graph visualization. Nodes are mappings, colored by pattern group.
 Edges are dependencies (target → lookup references). Click a node for details.
 Execution stages highlighted. Critical path shown. Error propagation paths visible
 (if mapping A fails, which downstream mappings are affected).

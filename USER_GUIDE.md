@@ -5,28 +5,53 @@
 
 ---
 
-## What This Tool Does
+## What Is This Tool For?
 
-InformaticaProjectAnalysis reads an entire Informatica PowerCenter estate — all mapping
-XMLs, workflow XMLs, and parameter files — and produces a conversion strategy document
-before any conversion work begins.
+If your organization uses **Informatica PowerCenter** for data integration and you are
+planning to migrate that logic to **open code** — Python scripts, dbt models, PySpark
+jobs, or any modern framework — this tool is the first step.
 
-Instead of treating each mapping in isolation, the tool analyzes the full estate together
-to answer three questions:
+The migration landscape has shifted. Teams used to move from one SaaS platform to another
+(Informatica Cloud, Talend, Matillion). Now they want to land in code they own,
+version-control, and deploy without platform lock-in. That changes the conversion problem:
+you need to produce well-structured, maintainable source code, not just functionally
+equivalent scripts inside another tool.
 
-1. **Which mappings share the same structural pattern?** If 14 mappings all follow a
-   truncate-and-load pattern differing only by table name, they should become one
-   parameterized template plus a config file — not 14 separate outputs.
+Informatica PowerCenter stores its data transformation logic in units called **mappings**.
+Each mapping defines a data flow: source tables → transformations (lookups, expressions,
+filters, aggregations) → target tables. A typical project has dozens to hundreds of
+mappings. All of this can be **exported as XML files** — and those XML exports are what
+this tool reads.
 
-2. **What depends on what?** The dependency graph shows which mappings must complete
-   before others can run (e.g., dimension loads before fact loads that look them up).
+**Why not just convert each mapping one at a time?** You can, but you'll end up with a
+mess. If 14 mappings all follow the same pattern differing only by table name, converting
+them individually produces 14 separate scripts instead of one parameterized template plus
+a config file. Shared lookup tables get redefined in every script. There's no dependency
+graph, no project structure, and massive duplication. You left a proprietary tool and
+landed in a code mess.
+
+InformaticaProjectAnalysis reads all the mapping XMLs from your Informatica project
+(the complete collection of exported mappings, workflows, and parameter files) and
+produces a **conversion strategy** before any conversion begins. The strategy answers
+three questions:
+
+1. **Which mappings share the same structural pattern?** Mappings with the same
+   transformation flow (e.g., source → lookup → expression → target) differing only
+   by table names and column names are grouped together as candidates for a single
+   parameterized template. The tool shows the evidence and assigns a confidence level.
+
+2. **What depends on what?** If mapping A loads `DIM_CUSTOMER` and mapping B does a
+   lookup against `DIM_CUSTOMER`, then B depends on A. The tool builds a dependency
+   graph across all mappings and computes a safe execution order.
 
 3. **What needs human attention?** Not every mapping can be confidently classified.
-   The strategy surfaces ambiguous cases, edge cases, and risk flags for tech lead review.
+   Custom SQL overrides, missing definitions, and unusual patterns reduce certainty.
+   The tool flags these for tech lead review.
 
-The tool observes and surfaces characteristics. It does not prescribe target stacks,
-warehouses, or orchestration platforms — those decisions belong to the humans reviewing
-the strategy.
+The output is a strategy document (PDF + Excel + JSON) that tech leads and leadership
+review and approve before conversion work starts. The tool does not prescribe which
+target language to use or how to orchestrate — those decisions belong to the humans
+reviewing the strategy.
 
 ---
 
@@ -69,7 +94,7 @@ Optional settings are documented in `.env.example`.
 
 ### 4. Create a Project Config
 
-Create a `*.project.yaml` file that points at your Informatica estate:
+Create a `*.project.yaml` file that points at your Informatica project exports:
 
 ```yaml
 project:
@@ -158,11 +183,11 @@ Controls which files within the source are included in the analysis.
 
 | Field | Default | Description |
 |---|---|---|
-| `fingerprint_strictness` | `moderate` | How strict spine matching is: `strict`, `moderate`, `relaxed` |
+| `fingerprint_strictness` | `moderate` | How strict spine matching is (spine = the ordered sequence of transformation types in a mapping; see "How the Analysis Works" below): `strict`, `moderate`, `relaxed` |
 | `min_group_size` | `2` | Minimum mappings needed to form a pattern group |
 | `confidence_threshold` | `0.7` | Below this, mappings are flagged for human review |
 | `detect_shared_assets` | `true` | Identify tables referenced by multiple mappings |
-| `build_dependency_dag` | `true` | Build cross-mapping dependency graph |
+| `build_dependency_dag` | `true` | Build cross-mapping dependency graph (DAG = Directed Acyclic Graph) |
 | `classify_expressions` | `true` | Use AI to classify expression complexity |
 
 ### `review` Section
@@ -191,7 +216,7 @@ and parses every mapping XML it finds. Each mapping is reduced to its structural
 components: transformation types, connector topology, expression bodies, lookup
 references, parameter variables, and SQL overrides.
 
-From the individual parse results, the tool builds an estate-level graph:
+From the individual parse results, the tool builds a project-level graph:
 
 - **Dependency edges** — if mapping A writes to TABLE_X and mapping B has a Lookup
   against TABLE_X, then B depends on A.
@@ -212,7 +237,7 @@ ordered sequence of transformation types from source to target.
 
 Examples:
 - `SQ → EXP → TARGET` (simple load)
-- `SQ → LKP → EXP → RTR → UPD → TARGET` (SCD2 dimension)
+- `SQ → LKP → EXP → RTR → UPD → TARGET` (SCD2 / slowly changing dimension)
 - `SQ(×3) → JNR → LKP(×2) → EXP → RTR → TARGET(×2)` (complex multi-source)
 
 Mappings with matching spines are candidates for the same pattern group. Within
@@ -282,7 +307,7 @@ tool.
 
 ### Dashboard (Leadership)
 
-The dashboard shows the estate at a glance: total mappings, pattern groups found,
+The dashboard shows the project at a glance: total mappings, pattern groups found,
 template candidates, unique mappings, and the scope reduction metric (e.g.,
 "50 mappings → 8 templates + 12 unique files"). It includes complexity distribution,
 confidence breakdown, dependency depth, and risk flags.
@@ -304,7 +329,7 @@ with member count and confidence indicator. Selecting a group shows:
 
 ### Dependency Graph (Both Audiences)
 
-Interactive DAG visualization. Nodes are mappings, colored by pattern group.
+Interactive dependency graph (DAG) visualization. Nodes are mappings, colored by pattern group.
 Edges are dependencies. Click a node to see its upstream dependencies, downstream
 dependents, and error propagation impact ("if this fails, N downstream mappings
 are affected").
@@ -341,11 +366,11 @@ retrieved as a build artifact. Review happens in the UI or through the API.
 
 ## Incremental Analysis
 
-When you re-run analysis on an estate that has changed:
+When you re-run analysis on a project that has changed:
 
 - Only new or modified mapping XMLs are re-parsed (unchanged files hit the
   SHA-256 cache)
-- Pattern grouping runs on the full estate (fast — parsing is cached)
+- Pattern grouping runs on the full project (fast — parsing is cached)
 - Previous human decisions (overrides, confirmations, notes) are preserved
   unless the underlying XML changed
 - The strategy document includes a diff section showing what changed
@@ -356,7 +381,8 @@ When you re-run analysis on an estate that has changed:
 
 Security is infrastructure, not a feature layer. Key protections:
 
-- All XML parsing is XXE-hardened (DTD and entity resolution disabled)
+- All XML parsing is hardened against XXE (XML External Entity) injection —
+  DTD and entity resolution disabled
 - Path traversal prevented — all paths resolved relative to configured root;
   symlinks rejected
 - ZIP extraction validates every entry path, caps total bytes and entry count
@@ -439,13 +465,14 @@ Change the `PORT` environment variable in `.env`. Default is `8090`.
 
 | Term | Definition |
 |---|---|
-| **Estate** | The complete set of Informatica PowerCenter mappings, workflows, and parameter files for a migration project |
-| **Spine** | The canonical ordered sequence of transformation types in a mapping (e.g., `SQ → EXP → LKP → TARGET`) |
-| **Pattern group** | A set of mappings that share the same structural spine and can be converted using one parameterized template |
-| **Variation tier** | How much a mapping differs from its group's canonical pattern: Tier 1 (parameter only), Tier 2 (minor structural), Tier 3 (fundamental — does not group) |
-| **Confidence** | How certain the tool is about a mapping-to-group assignment: HIGH, MEDIUM, LOW, UNCLASSIFIED |
-| **Dependency edge** | A relationship where one mapping's output is used as another mapping's lookup source |
-| **Shared asset** | A table referenced as a lookup source by multiple mappings across the estate |
-| **Strategy document** | The PDF + Excel + JSON output describing pattern groups, dependencies, and conversion recommendations |
-| **Human gate** | The structured review step where tech leads and leadership approve or reject the strategy |
-| **Project config** | The `*.project.yaml` file that defines source location, scope, analysis settings, and reviewers |
+| **Mapping** | A single unit of data transformation logic in Informatica PowerCenter. Defines how data flows from sources through transformations to targets. Exported as an XML file. |
+| **Project** | The complete collection of Informatica PowerCenter mappings, workflows, and parameter files being analyzed for migration. Defined by a single `*.project.yaml` config file. |
+| **Spine** | The canonical ordered sequence of transformation types in a mapping (e.g., `SQ → EXP → LKP → TARGET`). Used to identify structural similarity between mappings. |
+| **Pattern group** | A set of mappings that share the same structural spine and can be converted using one parameterized template instead of N separate files. |
+| **Variation tier** | How much a mapping differs from its group's canonical pattern: Tier 1 (parameter only — table/column names differ), Tier 2 (minor structural — an extra filter or expression), Tier 3 (fundamental — does not group). |
+| **Confidence** | How certain the tool is about a mapping-to-group assignment: HIGH, MEDIUM, LOW, UNCLASSIFIED. |
+| **Dependency edge** | A relationship where one mapping's output table is used as another mapping's lookup source — meaning the second must run after the first. |
+| **Shared asset** | A table referenced as a lookup source by multiple mappings across the project. |
+| **Strategy document** | The PDF + Excel + JSON output describing pattern groups, dependencies, and conversion recommendations. Reviewed and approved before conversion begins. |
+| **Human gate** | The structured review step where tech leads and leadership approve or reject the strategy before any conversion work starts. |
+| **Project config** | The `*.project.yaml` file that defines source location, scope, analysis settings, and reviewers. The single input that drives the entire analysis. |
